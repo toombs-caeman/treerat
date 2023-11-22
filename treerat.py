@@ -265,7 +265,7 @@ fp_ast = [
          ],
         ],
         [definition,
-         [node, lchar],
+         lchar,
          [argument,
           [choice,
            [sequence, [string, '\\'], [CLASS, 'nrt\'"\\']],
@@ -354,7 +354,11 @@ def lexLabel(text, idx, name):
 
 def lexIndex(text, idx, expr, offset):
     # TODO get rid of bare_args
-    return parser[expr.args[0]](text, idx, offset)
+    name = expr.args[0]
+    if (x:=parser[name](text, idx, offset)) is None:
+        return
+    l, v = x
+    return l, [label, name, v]
 
 lexer = {
     string: lexString,
@@ -372,64 +376,6 @@ lexer = {
     index: lexIndex,
 }
 #####################################################################
-
-def trim(x, memo=None):
-    if not isinstance(x, list):
-        return x
-    typ, *args = x
-    if typ == sequence:
-        # flatten sequences
-        out = []
-        for t, *a in map(lambda v:trim(v, memo), args):
-            if t == sequence:
-                #print('extend')
-                out.extend(a)
-            else:
-                #print('app')
-                out.append([t, *a])
-        # squish strings
-        in_, out = out, []
-        s = ''
-        for t, *a in in_:
-            if t == string:
-                s += a[0]
-            else:
-                if s:
-                    out.append([string, s])
-                    s = ''
-                out.append([t, *a])
-        if s:
-            out.append([string, s])
-
-        if len(out) == 1:
-            return out[0]
-        return [sequence, *out]
-    else:
-        return [typ, *map(trim, args)]
-
-
-
-
-def toString(x):
-    typ, *args = x
-    if typ == node:
-        name, body = args
-        return toString(body)
-    elif typ == argument:
-        body = args[0]
-        return toString(body)
-    elif typ == sequence:
-        #return [toString(a) for a in args]
-        return ''.join(map(toString, args))
-    elif typ == label:
-        body = args[0]
-        return toString(body)
-    elif typ == string:
-        return args[0]
-    else:
-        raise NotImplementedError(typ)
-    print('wft')
-    pass
 
 
 #####################################################################
@@ -459,7 +405,7 @@ def ParseDefinition(lvalue, expr):
     parser[lvalue] = prepLex(expr)
 
 
-# TODO ARG should bind more tightly than STAR, does it?
+# TODO ARG should bind more tightly than STAR. it doesn't
 EVAL = 'eval'
 parse = 'parse'
 boot = 'boot'
@@ -476,32 +422,33 @@ def Parse(text, idx):
         return
     _, v = x
     #v = trim(v)
-    v = walk(v)
+    v = trim(v)
     return v
-def walk(x, ancestor=None, memo=None):
+
+def trim(x, ancestor=None, memo=None):
     match x:
-        case [walk.node, name, body]:
+        case [trim.node, name, body]:
             memo = []
-            walk(body, node, memo)
+            trim(body, node, memo)
             return [name, *memo]
-        case [walk.argument, body]:
-            body = walk(body, argument, memo)
+        case [trim.argument, body]:
+            body = trim(body, argument, memo)
             memo.append(body)
             return body
-        case [walk.label, name, body]:
+        case [trim.label, name, body]:
             if ancestor == argument:
-                return walk(body, ancestor, [])
-        case [walk.string, literal]:
+                return trim(body, ancestor, [])
+        case [trim.string, literal]:
             if ancestor == argument:
                 return literal
-        case [walk.sequence, *args]:
-            args = [walk(a, ancestor, memo) for a in args]
+        case [trim.sequence, *args]:
+            args = [trim(a, ancestor, memo) for a in args]
             if ancestor == argument:
                 out = []
                 while args:
                     a = args.pop(0)
                     match a:
-                        case [walk.sequence, *args2]:
+                        case [trim.sequence, *args2]:
                             args = args2 + args
                             #out.extend(args2)
                         case str():
@@ -515,52 +462,18 @@ def walk(x, ancestor=None, memo=None):
                     return out[0]
                 return [sequence, *out]
         case [typ, *args]:
-            out = [walk(a, ancestor, memo) for a in args]
+            out = [trim(a, ancestor, memo) for a in args]
             if ancestor == argument:
                 return [typ, *out]
         case x:
             return x
 
-def trim(x, memo=None):
-    if not isinstance(x, list):
-        return x
-    typ, *args = x
-    if typ == sequence:
-        # flatten sequences
-        out = []
-        for t, *a in map(lambda v:trim(v, memo), args):
-            if t == sequence:
-                #print('extend')
-                out.extend(a)
-            else:
-                #print('app')
-                out.append([t, *a])
-        # squish strings
-        in_, out = out, []
-        s = ''
-        for t, *a in in_:
-            if t == string:
-                s += a[0]
-            else:
-                if s:
-                    out.append([string, s])
-                    s = ''
-                out.append([t, *a])
-        if s:
-            out.append([string, s])
-
-        if len(out) == 1:
-            return out[0]
-        return [sequence, *out]
-    else:
-        return [typ, *map(trim, args)]
-
 # fuckery to make pattern matching work
-walk.node = node
-walk.argument = argument
-walk.label = label
-walk.string = string
-walk.sequence = sequence
+trim.node = node
+trim.argument = argument
+trim.label = label
+trim.string = string
+trim.sequence = sequence
 
 def Boot(input_text, init_ast=None):
     if init_ast:
@@ -586,9 +499,6 @@ Power   <- Value ('^' Power)?
 Value   <- [0-9]+ / '(' Expr ')'
 """
 #ns[EVAL](fp_ast)
-input_text = "%Class <- '[' %(!']' Char)+ ']'"
-input_text = """awful <- bashful
-""" # careful <- diligent"""
 input_ast = [main,
     [definition,
      [node, lCLASS],
@@ -601,4 +511,9 @@ input_ast = [main,
     ],
 ]
 #print(lexDot(input_text, 6))
+input_text = """awful <-  bashful"""
+input_text = "%Class <- '[' %(!']' Char)+ ']'"
+ns[boot](input_text, fp_ast)
+print()
+input_text = """awful <- '[' bashful"""
 ns[boot](input_text, fp_ast)
