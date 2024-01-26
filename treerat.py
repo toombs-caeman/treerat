@@ -1,9 +1,10 @@
+#!/usr/bin/env python
 from pprint import pprint as pp
 # parsing expession grammar (PEG)
 # nice PEG visualization https://blog.bruce-hill.com/packrat-parsing-from-scratch
 # the original paper, which describes PEGs as a PEG https://bford.info/pub/lang/peg.pdf
 
-fp = '''
+fixedpoint = '''
 %Main <- Spacing %Expr+ (ParseRun / EOF)
 %ParseRun <- 'parse_run' Spacing
 Expr <- %(ParseDefinition / FFDefinition)
@@ -119,7 +120,7 @@ lchar = [label, char]
 lindex = [label, index]
 lnode = [label, node]
 
-fp_ast = [
+fixedpoint_ast = [
         main,
         [definition,
          [node, lmain],
@@ -350,7 +351,6 @@ def lexLabel(text, idx, name):
         return
     l, v = x
     return l, [label, name, v]
-    return parser[name](text, idx)
 
 def lexIndex(text, idx, expr, offset):
     # TODO get rid of bare_args
@@ -417,7 +417,7 @@ def Main(*top_level_expressions):
     for e in top_level_expressions:
         ns[EVAL](e)
 
-def Parse(text, idx):
+def Parse(text, idx=0):
     if (x:=parser[main](text, idx)) is None:
         return
     _, v = x
@@ -477,10 +477,10 @@ trim.sequence = sequence
 
 def Boot(input_text, init_ast=None):
     if init_ast:
-        print('loading grammar')
+        #print('loading grammar')
         ns[main](init_ast)
-    print('grammar loaded')
-    pp(Parse(input_text, 0))
+    #print('grammar loaded')
+    #pp(Parse(input_text, 0))
     #ast = ns[parse](input_text, 0)
     #print(ast)
 
@@ -513,7 +513,7 @@ input_ast = [main,
 #print(lexDot(input_text, 6))
 input_text = """awful <-  bashful"""
 input_text = "%Class <- '[' %(!']' Char)+ ']'"
-ns[boot](input_text, fp_ast)
-print()
+ns[boot](input_text, fixedpoint_ast)
+#print()
 input_text = """awful <- '[' bashful"""
-ns[boot](input_text, fp_ast)
+ns[boot](input_text, fixedpoint_ast)
