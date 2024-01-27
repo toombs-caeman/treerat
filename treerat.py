@@ -4,45 +4,7 @@ from pprint import pprint as pp
 # nice PEG visualization https://blog.bruce-hill.com/packrat-parsing-from-scratch
 # the original paper, which describes PEGs as a PEG https://bford.info/pub/lang/peg.pdf
 
-fixedpoint = '''
-%Main <- Spacing %Expr+ (ParseRun / EOF)
-%ParseRun <- 'parse_run' Spacing
-Expr <- %(ParseDefinition / FFDefinition)
-%FFDefinition <- '```python' Spacing %('def' Spacing %Label (!'`' Char)*) '```'
-%ParseDefinition <- %(Label / Node) LEFTARROW %ParseExpr
-ParseExpr  <- %Choice / %Sequence / (%ZeroOrOne / %ZeroOrMore / %OneOrMore) / (%Lookahead / %NotLookahead / %Argument) / %Primary
-%Choice   <- %ParseExpr:1 (SLASH %ParseExpr:1)+
-%Sequence <- %ParseExpr:2 (%ParseExpr:2)+
-%ZeroOrOne  <- %ParseExpr:3 QUESTION
-%ZeroOrMore <- %ParseExpr:3 STAR
-%OneOrMore  <- %ParseExpr:3 PLUS
-%Lookahead    <- AMP  %ParseExpr:4
-%NotLookahead <- BANG %ParseExpr:4
-%Argument     <- ARG  %ParseExpr:4
-%Node         <- ARG %Label
-Primary <- (OPEN %ParseExpr CLOSE) / (%Label !LEFTARROW) / %String / %Class / %DOT / %Index
-%Index  <- %Label ':' %([0-9]+)
-Spacing <- (Space / Comment)*
-Comment <- '#' (!EOL .)* EOL
-LEFTARROW  <- '<-' Spacing
-SLASH     <- '/' Spacing
-ARG       <- '%' Spacing
-AMP       <- '&' Spacing
-BANG      <- '!' Spacing
-QUESTION  <- '?' Spacing
-STAR      <- '*' Spacing
-PLUS      <- '+' Spacing
-OPEN      <- '(' Spacing
-CLOSE     <- ')' Spacing
-%DOT      <- '.' Spacing
-Space <- ' ' / '\\t' / EOL
-EOL <- '\\r\\n' / '\\r' / '\\n'
-EOF <- !.
-%Label <- %([a-zA-Z_] [a-zA-Z_0-9]*) Spacing
-%String <- (('"' %(!'"' Char)* '"') / ("'" %(!"'" Char)* "'")) Spacing
-%Class <- '[' %((!']' Char)+) ']' Spacing
-Char <- %( ('\\'  [nrt'[\\]"\\\\]) / ('\\' [0-2] [0-7] [0-7]) / ('\\' [0-7] [0-7]?) / !'\\' .)
-'''
+# TODO the fixed point ast doesn't need parse_run or FFDefinitions
 
 main = 'Main'
 parserun = 'ParseRun'
@@ -124,9 +86,9 @@ fixedpoint_ast = [
         main,
         [definition,
          [node, lmain],
-         [sequence, lspacing, [oneormore, [argument, lexpr]], [choice, lparserun, leof]],
+         
         ],
-        [definition, [node, lparserun], [sequence, [string, 'parse_run'], lspacing]],
+        [definition, ],
         [definition, lexpr, [argument, [choice, ldefinition]]],
         [definition,
          [node, lffdefinition],
