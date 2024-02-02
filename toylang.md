@@ -18,9 +18,7 @@
     * DeBrujin naming 
     * [name resolution](https://willcrichton.net/notes/specificity-programming-languages/)
 * reversible parse expressions?
-
-
-* unify PEG and regex 
+* unify PEG and regex
 
 * representing state machines such that transition diagrams can be automatically generated, and properties statically analyzed?
 * 'return a mutation object' as a model for 'pure' functions with the program state as input, and a new state as output. (equivalent to transactions?)
@@ -132,6 +130,12 @@ values and expressions
     * blocks take zero arguments
     * functions and blocks
 * use python's taxonomy of [collections](https://docs.python.org/3/library/collections.abc.html#collections-abstract-base-classes)
+    * haskell trait taxonomy?
+# purity
+* region based local mutation - a region can use mutation locally while remaining externally pure
+* purity inspection - purity as trait? higher order functions can pattern match to be lazy if pure.
+    * non-terminating as a trait? to force being lazy?
+* whats the difference in practice between IO that actually calls some long running user/network IO and 'IO' that is really just state mutation.
 
 # meta-syntax v0.0
 define foreign function interface (ffi).
@@ -295,6 +299,7 @@ higher order functions
 * ⊃`C)` /S is strict subset
 
 can we do auto AOS↔SOA conversion
+* make unused declarations a debug build warning and production build error
 # tooling
 ## keyboard
 take notes from the [bqn keyboard](https://mlochbaum.github.io/BQN/tutorial/expression.html#arithmetic)
