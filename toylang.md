@@ -236,6 +236,7 @@ higher order functions
 * ⊃`C)` /S is strict subset
 
 can we do auto AOS↔SOA conversion
+* make unused declarations a debug build warning and production build error
 # tooling
 ## keyboard
 take notes from the [bqn keyboard](https://mlochbaum.github.io/BQN/tutorial/expression.html#arithmetic)
