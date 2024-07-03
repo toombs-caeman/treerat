@@ -1,8 +1,12 @@
+# TODO
+* Each parsing definition should explicitly mark the sections that are kept, with the default being none. While this worsens the syntax, it makes trimming the tree much easier
+* unfmt
+
 # treerat
 
 This is a language for rapidly prototyping domain specific languages (DSLs) hosted within a general purpose language (GPL).
 
-It works by exposing a self-modifying parser and interpreter that can call or define methods in the host language.
+It works by exposing a self-modifying parser and interpreter that can call or define methods in the host language while allowing total syntactic freedom. The heavy lifting of semantics can be handled by the host.
 
 The initial language is intentionally simple, only able to modify itself.
 
@@ -11,6 +15,7 @@ version 0.0 design phase
 
 The parser sort of works, but not in a form that's self-modifiable.
 This is more a thought experiment than anything.
+
 
 # the initial language
 The parser is a packrat parser with a modifiable internal representation of the current grammar and the remaining input.
@@ -36,6 +41,54 @@ derivative functions
 * eval - define function in host, then load through ffi
 * pause - save the current state of the interpreter such that it can be restarted. (execution will restart at boot function)
 
+# Grammar
+from https://bford.info/pub/lang/peg.pdf
+```
+%main <- Spacing %Definition+ EndOfFile
+%Definition <- %Identifier LEFTARROW %Expression
+Expression <- Choice /
+    Sequence /
+    (ZeroOrOne / ZeroOrMore / OneOrMore) /
+    (Lookahead / NotLookahead / Argument) /
+    Identifier !LEFTARROW /
+    OPEN Expression CLOSE /
+    Literal /
+    Class /
+    DOT
+%Choice   <- Expression:1 (SLASH Expression:1)+
+%Sequence <- Expression:2 Expression:2+
+%ZeroOrOne  <- Expression:3 IBANG
+%ZeroOrMore <- Expression:3 STAR
+%OneOrMore  <- Expression:3 PLUS
+%Lookahead    <- AMP  Expression:4
+%NotLookahead <- BANG Expression:4
+%Argument     <- CENT Expression:4
+%Identifier <- %[a-zA-Z_] %[a-zA-Z_0-9]* Spacing
+%Literal <- ['] (!['] Char)* ['] Spacing / ["] (!["] Char)* ["] Spacing
+%Class <- '[' %(!']' (Range/Char))* ']' Spacing
+%Range <- %Char '-' %Char
+Char <- %('\\' [nrt'"\[\]\\]
+    / '\\' [0-2][0-7][0-7]
+    / '\\' [0-7][0-7]?
+    / !'\\' .)
+LEFTARROW <- '<-' Spacing
+SLASH     <- '/' Spacing
+CENT      <- '%' Spacing
+AMP       <- '&' Spacing
+BANG      <- '!' Spacing
+IBANG     <- '?' Spacing
+STAR      <- '*' Spacing
+PLUS      <- '+' Spacing
+OPEN      <- '(' Spacing
+CLOSE     <- ')' Spacing
+%DOT      <- '.' Spacing
+Spacing   <- (Space / Comment)*
+Comment   <- '#' (!EndOfLine .)* EndOfLine
+Space     <- ' ' / '\t' / EndOfLine
+EndOfLine <- '\r\n' / '\n' / '\r'
+EndOfFile <- !.
+```
+
 # grammar version
 as a hash of the grammar?
 as a hash of the host + grammar + primitives?
@@ -58,7 +111,29 @@ as a hash of the host + grammar + primitives?
 * trim phase - remove nodes not marked as arguments
     * node + children + markers -> ast
 
+# why
+I was playing with packrat parsing one day and I thought it would be easy.
+It is not, but writing a language is pretty fun.
 
+I have a bunch of ideas for 'micro' languages which would be greatly aided by this.
+
+* a sane shell language, built on an insane foundation
+    * using posix `sh` as a runtime
+    * a session thats able to seamlessly transfer itself over ssh, even if the shell isn't 'installed' on the new host
+* a parsing language
+* a templating language
+  * [moustache](https://mustache.github.io/mustache.5.html) templating
+  * [jinja](https://jinja.palletsprojects.com)
+  * python's [f-string](https://peps.python.org/pep-0498/)
+
+* data format
+  * [TOML](https://github.com/toml-lang/toml)
+  * [YAML](https://yaml.org/), or pseudo-INI
+  * [Tablatal / Indental](https://wiki.xxiivv.com/site/tablatal.html)
+
+* a data query format
+  * [dasel](https://github.com/TomWright/dasel)
+  * [gron](https://github.com/tomnomnom/gron) for grepping json
 
 # examples
 
@@ -84,7 +159,35 @@ This snippet defines how to parse algebraic expression using the normal preceden
 * version 1.0
     * standalone interpreters/semantics?
 
+# features to play with later
+* inline snapshot testing
+* can name everything, don't have to name anything
+    * DeBrujin naming
+    * [name resolution](https://willcrichton.net/notes/specificity-programming-languages/)
+* optimization modes
+* reversible parse expressions?
+* name resolution
+    * scoping, garbage collection, var lifetimes
+* representing state machines such that transition diagrams can be automatically generated, and properties statically analyzed?
+* 'return a mutation object' as a model for 'pure' functions with the program state as input, and a new state as output. (equivalent to transactions?)
+* trait-based type heirarchy
+* language language to sql (python+sql+apl)
+* packages published as source under git, use semver git tags to publish version so there's no separate packaging mechanism. The package name is the host url (sans http://)
+* toolchain/compiler/interpreter/linter/etc should be a single binary file
+* how to resolve incompatible libraries? do we allow multiple versions of the same libraries. how can we have 'virtual env' to capture the dependencies of just the current project in a separate tree.
+* a 'binary' is a frozen and trimmed program state (trim to reachable code from entry point and exec) or have multiple entrypoints bundled like busybox
+* shebang convention to automatically run source file as an interpreter (as bash does).
+* language primitives exposing heap/stack differences, or other low level concepts should not be 'default'. The default numeric type should be bignum, but let `u32` be specified. default sequence type should be a vector (variable size/type), but allow array (const size, uniform type) be specified.
+* separate language into high and low level primitives, high level primitives are expressible multiple ways using low level primitives, chosen by static analysis and optimization level (for example [] would mean 'any sequence' unless given an explicit annotation, depending on usage it could compile to array or a vector).
+* high level types are collections of traits, any low level structure which implements those traits may be used at compile time
+* [comptime](https://kristoff.it/blog/what-is-zig-comptime/)
+* embed sqlite in the language
+* use python's taxonomy of [collections](https://docs.python.org/3/library/collections.abc.html#collections-abstract-base-classes)
+* consise lambda function
+* function lifting
+
 # reference
+* [katahdin](https://chrisseaton.com/katahdin/)
 * [syntax across languages](http://rigaux.org/language-study/syntax-across-languages.html)
 
 
@@ -95,3 +198,6 @@ This snippet defines how to parse algebraic expression using the normal preceden
 * [general purpose languages](https://en.wikipedia.org/wiki/General-purpose_programming_language)
 * [function composition](https://hackage.haskell.org/package/base-4.17.0.0/docs/Control-Arrow.html)
 * use a tree rat as the mascot (red crested tree rat?)
+* [packrat reference](https://bford.info/packrat/)
+* [function lifting (automap)](https://futhark-lang.org/blog/2024-06-17-automap.html)
+* [crafting interpreters](https://craftinginterpreters.com/)

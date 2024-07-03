@@ -86,9 +86,9 @@ fixedpoint_ast = [
         main,
         [definition,
          [node, lmain],
+         [argument, ],
          
         ],
-        [definition, ],
         [definition, lexpr, [argument, [choice, ldefinition]]],
         [definition,
          [node, lffdefinition],

@@ -1,14 +1,33 @@
 import enum
 from functools import cache, wraps
+from collections import UserList
+
+class namedlist(UserList):
+    def __init__(self, arg=(), name=None):
+        super().__init__(arg)
+        self.name = name
+        
+    def __str__(self):
+        if self.name:
+            return self.name + super().__str__()
+        return super().__str__()
+    def __repr__(self):
+        if self.name:
+            return self.name + super().__repr__()
+        return super().__repr__()
+
 
 #__all__ = ['BuildParser', 'T']
 
 """
-'specs' are a function serialized into a lisp-like syntax
-each function is a list with the first element being T that indicates the function, and following by string and spec arguments to that function
+'specs' are a function serialized into a lisp-like syntax object.
+Each function call is a list with the first element being an enum T that indicates the function, followed by string and spec arguments to curry that function with.
 
 This allows a spec to be valid json.
+
 """
+
+
 # the types recognized in spec
 T = enum.Enum('T', (
     'Dot',
@@ -30,7 +49,18 @@ T = enum.Enum('T', (
     'Label',
 ))
 
-# control names
+"""
+all types ∈ T behave as they do in any PEG (parsing expression grammar) except Argument, Index, Node and Label.
+
+Argument marks a section of the parsing expression to be used by a Label or Node.
+
+Labels either return a string (if their arguments are all strings) or a flat list of nodes and strings (if any argument is a node)
+Index is syntax sugar that makes it easier to define operator priority, but is otherwise equivalent to a label.
+
+Nodes return a new node with a flat list of the given arguments.
+
+"""
+# Command names
 C = enum.Enum('C', (
     'Entrypoint',
     'Definition',
@@ -50,7 +80,6 @@ class Parser:
 
         This is not necessarily the exact string that was used to generate the tree.
         """
-        
         raise NotImplementedError
 
 def BuildParser(Entrypoint, **labels) -> Parser:
@@ -61,8 +90,9 @@ def BuildParser(Entrypoint, **labels) -> Parser:
 
 class PackratParser(Parser):
     def __init__(self, Entrypoint, **labels):
-        self.spec = Entrypoint
-        self.labels = labels
+        # TODO do we have totally separate trim behaviors between labels and nodes?
+        # does it make sense to have to separate definitions, even if they're structurally similar? their behavior is different.
+        self.labels = {C.Entrypoint.name:Entrypoint, **labels}
         self.cached_funcs = []
         self.label_funcs = {}
         def walk(spec):
@@ -76,15 +106,12 @@ class PackratParser(Parser):
 
             @wraps(method)
             def call(idx):
-                try:
-                    return method(idx, *args)
-                except TypeError:
-                    raise ValueError(method.__name__, args)
+                return method(idx, *args)
 
             # index may need to create new labels that aren't explicitly given
             if t == T.Index and args not in self.label_funcs:
                 name, offset = args
-                l, *a = labels[name]
+                l, *a = self.labels[name]
                 self.label_funcs[args] = walk((l, *a[offset:]))
 
             # disable caching for Label and Index
@@ -95,19 +122,20 @@ class PackratParser(Parser):
 
             return call
 
-        for label, s in labels.items():
+        for label, s in self.labels.items():
             #print(label)
+            if s and s[0] == T.Node:
+                s = [T.Argument, s]
             self.label_funcs[label] = walk(s)
-        # the toplevel spec forms the entrypoint
-        self.entrypoint = walk(Entrypoint)
-
-
 
     def parse(self, text):
         self.text = text
         for f in self.cached_funcs:
             f.cache_clear()
-        result = self.entrypoint(0)
+        result = self.label_funcs[C.Entrypoint.name](0)
+        # TODO
+        return result
+        #print(result[1])
         if result:
             return self._trim(result[1])
         return None
@@ -134,40 +162,78 @@ class PackratParser(Parser):
         return ''.join(walk(self.spec, tree))
         
 
-    def _trim(self, obj, memo=None):
-        #return obj
+    def _trim(self, obj, keep=True, memo=None):
+        # arguments under nodes or labels should 
         # reduce nesting to just Nodes
         # under the top level, return everything
         # need to filter out arguments, nodes
         # join sequential strings and flatten nested lists
+
+        # a node should reach down to just its arguments
+        # a label s
+        #def node(n, memo):
+        #    match n:
+        #        case [T.Node, *_]:
+        #            return memo
+        #        case [T.Label, *_]:
+        #            pass
+        #        case [T.Argument, body]: memo.append(argument(body))
+        #        case list():
+        #            for x in n:
+        #                node(x, memo)
+        #def argument(n):
+        #    match n:
+        #        case [T.Node, *args]:
+        #            return node(n, [])
+        #        case [T.Label, body]:
+        #            return label(body)
+        #        case [T.Argument, body]:
+        #            return argument(body)
+
+        #    if not isinstance(n, list):
+        #        return memo
+        #    # search for arguments
+
+        #    return memo
+
+        #print(f'_trim({obj[0] if obj else obj}, {keep}, {id(memo)}')
         match obj:
             case [T.Node, name, body]:
+                if not keep:
+                    return
+                #memo = namedlist([name], name='node')
                 memo = [name]
-                self._trim(body, memo)
+                self._trim(body, False, memo)
                 return memo
             case [T.Argument, body]:
-                # TODO is None right here? or is it better to also include labels until this step
-                body = self._trim(body, memo)
-                if memo:
+                body = self._trim(body, True, memo)
+                if memo is not None and memo is not body:
                     memo.append(body)
                 return body
-            case [T.Label, body]:
-                memo2 = []
-                body = self._trim(body, memo2)
-                if memo:
-                    memo.extend(memo2)
-                return body
+            case [T.Label, name, body]:
+                if not keep:
+                    return
+                #memo2 = namedlist(name='label') if memo else memo
+                memo2 = [] if memo else memo
+                body = self._trim(body, keep, memo2)
+                return memo2
             case list():
+                #out = namedlist(name='list')
                 out = []
+                prev_str = False
                 for a in obj:
-                    x = self._trim(a, memo)
-                    if isinstance(x, str) and out and isinstance(out[-1], str):
+                    x = self._trim(a, keep, memo)
+                    cur_str = isinstance(x, str)
+                    if prev_str and cur_str:
                         out[-1]+=x
                     else:
-                        if x is not None:
+                        if x:
                             out.append(x)
+                    prev_str = cur_str
                 if len(out) == 1:
                     return out[0]
+                if not out:
+                    return None
                 return out
             case _:
                 return obj
@@ -180,7 +246,6 @@ class PackratParser(Parser):
     #   list:, or a Node
     #
     # this make extensive use of the fact that functions implicitly return None
-    # and that None is falsy while any match will be truthy
 
     def Dot(self, idx):
         if idx < len(self.text):
@@ -247,9 +312,10 @@ class PackratParser(Parser):
     def Label(self, idx, name):
         if (x:=self.label_funcs[name](idx)):
             idx,v = x
-            return idx, [T.Label, v]
+            return idx, [T.Label, name, v]
 
     def Index(self, idx, name, offset):
+        return self.Label(idx, (name, offset))
         if (x:=self.label_funcs[name, offset](idx)):
             idx,v = x
             return idx, [T.Label, v]
@@ -268,10 +334,6 @@ def _fixedpoint():
     index = T.Index.name
     node = T.Node.name
     argument = T.Argument.name
-    main = C.Entrypoint.name
-    parserun = 'ParseRun'
-    expr = 'Expr'
-    ffdefinition = 'FFDefinition'
     definition = C.Definition.name
     parseexpr = 'ParseExpr'
     primary = 'Primary'
@@ -291,7 +353,6 @@ def _fixedpoint():
     space = 'SPACE'
     eol = 'EOL'
     eof = 'EOF'
-    CLASS = 'Class'
     char = 'Char'
 
     # labels
@@ -330,6 +391,8 @@ def _fixedpoint():
     alabel  = [T.Argument, [T.Label, label]]
     astring = [T.Argument, [T.Label, string]]
     aindex  = [T.Argument, [T.Label, index]]
+    achar = [T.Argument, [T.Label, char]]
+    anode  = [T.Argument, [T.Label, node]]
     
     az = 'abcdefghijklmnopqrstuvwxyz'
     AZ = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
@@ -347,7 +410,7 @@ def _fixedpoint():
     labels = {
         C.Entrypoint.name:[T.Node, C.Entrypoint.name, [T.Sequence, lspacing, [T.OneOrMore, adefinition], leof]],
         definition:[T.Node, definition,
-            [T.Sequence, [T.Argument, [T.Choice, llabel, lnode]], lleftarrow, aparseexpr]],
+            [T.Sequence, [T.Choice, alabel, anode], lleftarrow, aparseexpr]],
         parseexpr: [T.Choice, achoice, asequence, [T.Choice, azeroorone, azeroormore, aoneormore], [T.Choice, alookahead, anotlookahead, aargument], aprimary],
     
         T.Choice.name: [T.Node, T.Choice.name,
@@ -367,7 +430,7 @@ def _fixedpoint():
         T.Argument.name: [T.Node, T.Argument.name,
             [T.Sequence, larg, [T.Argument, [T.Index, parseexpr, 4]]]],
         T.Node.name: [T.Node, T.Node.name,
-            [T.Sequence, larg, [T.Argument, llabel]]],
+            [T.Sequence, larg, alabel]],
         primary:[T.Choice,
                  [T.Sequence, lopen, aparseexpr, lclose],
                  aindex,
@@ -389,35 +452,33 @@ def _fixedpoint():
         close: [T.Sequence, [T.String, ')'], lspacing],
         dot: [T.Sequence, [T.String, '.'], lspacing],
         space: [T.Choice, [T.String, ' '], [T.String, '\t'], leol],
-        #eol: [T.Choice, [T.String, '\\r\\n'], [T.String, '\\r'], [T.String, '\\n']],
         eol: [T.String, '\r\n', '\r', '\n'],
         eof: [T.NotLookahead, [T.Dot]],
         T.Label.name: [T.Node, T.Label.name,
                        [T.Sequence, [T.Argument, [T.Sequence, [T.String, *az, *AZ, '_'], [T.ZeroOrMore, [T.String, *az, *AZ, '_', *d]]]], lspacing]],
         T.String.name: [T.Node, T.String.name,
                         [T.Sequence, [T.Choice,
-                            [T.Sequence, qq, [T.Argument, [T.ZeroOrMore, [T.Sequence, [T.NotLookahead, qq], lchar]]], qq],
-                            [T.Sequence, q, [T.Argument, [T.ZeroOrMore, [T.Sequence, [T.NotLookahead, q], lchar]]], q],
-                            [T.Sequence, b, [T.OneOrMore, [T.Argument, [T.Sequence, [T.NotLookahead, bb], lchar]]], bb]
+                            [T.Sequence, qq, [T.Argument, [T.ZeroOrMore, [T.Sequence, [T.NotLookahead, qq], achar]]], qq],
+                            [T.Sequence, q, [T.Argument, [T.ZeroOrMore, [T.Sequence, [T.NotLookahead, q], achar]]], q],
+                            [T.Sequence, b, [T.OneOrMore, [T.Argument, [T.Sequence, [T.NotLookahead, bb], achar]]], bb]
                         ], lspacing]],
-        char: [T.Choice,
+        char: [T.Argument, [T.Choice,
                [T.Sequence, [T.String, '\\'], [T.String, *"nrt'[]\"\\"]],
                [T.Sequence, [T.String, '\\'], d2, d7, d7],
                [T.Sequence, [T.String, '\\'], d7,[T.ZeroOrOne, d7]],
-               [T.Sequence, [T.NotLookahead, [T.String, '\\']], [T.Dot]] ],
+               [T.Sequence, [T.NotLookahead, [T.String, '\\']], [T.Dot]] ]],
     }
-    # TODO wrap parser to convert strings to T
     return BuildParser(**labels), labels
 
 fixedpoint, labels = _fixedpoint()
 
+# TODO this is really an evaluator and should be in a separate file
 def squaredCircle(tree):
     match tree:
         case [C.Entrypoint.name, *exprs]:
             pass
         case _:
             raise ValueError
-    #names = tuple(t.name for t in T)
     labels = {}
     def walk(b):
         match b:

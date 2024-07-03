@@ -1,36 +1,3 @@
-# name options
-* [ayeaye](https://subnautica.fandom.com/wiki/Eyeye)
-* [minima](https://github.com/TheRealMichaelWang/minima)
-# minimal viable interpreter
-* parsing source to ast
-* inline ffi for implementing 'builtins'
-* 'main()' to evaluate ast
-* name resolution
-    * scoping, garbage collection, var lifetimes
-* backing store/serialization? for communicating between foreign functions?
-* binary data format? 'native' types
-
-* name define grammar version by hash of parsing expressings
-    * 'use <grammar>' directive for loading grammar by hash
-
-* inline snapshot testing
-* can name everything, don't have to name anything
-    * DeBrujin naming 
-    * [name resolution](https://willcrichton.net/notes/specificity-programming-languages/)
-* reversible parse expressions?
-
-
-* unify PEG and regex 
-
-* representing state machines such that transition diagrams can be automatically generated, and properties statically analyzed?
-* 'return a mutation object' as a model for 'pure' functions with the program state as input, and a new state as output. (equivalent to transactions?)
-
-# optimization modes
-0. run as a repl with no attempt at using restrictive primitives
-1. compile, but do not use restrictive primitives
-2. compile, derive restrictive primitives
-3. compile, fail on ambiguous primitives
-
 # type heirarchy
 low-level types
 * num - generic number
@@ -59,19 +26,6 @@ low-level types
 join python sql and apl in an unholy union
 allow dense array syntax but encourage pythonic style
 allow persistence and strong consistency guarantees by embedding a sqlite database
-
-# tooling
-* packages must be published as source under git, use semver git tags to publish version so there's no separate
-  packaging mechanism. The package name is the host url (sans http://)
-* toolchain/compiler/interpreter/linter/etc should be a single binary file
-* static binaries.
-* how to resolve incompatible libraries? do we allow multiple versions of the same libraries.
-  how can we have 'virtual env' to capture the dependencies of just the current project in a separate tree.
-* stdlib should be a flat namespace, statically linked in compiler and copied when used to any output.
-* cross-compilation possible.
-* a 'binary' is a frozen and trimmed program state (trim to reachable code from entry point and exec)
-  or have multiple entrypoints bundled like busybox
-* shebang convention to automatically run source file as an interpreter (as bash does).
 
 # orthogonal syntax
 unify parts of programming languages that are typically similar but different syntax.
@@ -102,7 +56,6 @@ apl
 sql
 * the same code can lead to different 'plans' at runtime based on meta-data about the execution context or data size
 zig
-* [comptime](https://kristoff.it/blog/what-is-zig-comptime/)
 bash et al.
 * allow source files to run in 'interpreter mode', or have a repl
 python
@@ -112,17 +65,6 @@ python
 elixir
 * assignment is actually pattern matching
 
-# novel ideas?
-* embed sqlite in the language
-* afford efficient 'array of structs'<->'struct of arrays' memory packing.
-* if pair expects an expression but gets a newline, whitespace become significant like python.
-  the resulting block has type block.
-blocks are implicitly a function of zero arguments, but also evaluate when cast to another type.
-unless the receiving function calls for a block.
-* language primitives exposing heap/stack differences, or other low level concepts should not be 'default'. The default numeric type should be bignum, but let `u32` be specified. default sequence type should be a vector (variable size/type), but allow array (const size, uniform type) be specified.
-* separate language into high and low level primitives, high level primitives are expressible multiple ways using low level primitives, chosen by static analysis and optimization level (for example [] would mean 'any sequence' unless given an explicit annotation, depending on usage it could compile to array or a vector).
-* high level types are collections of traits, any low level structure which implements those traits may be used at compile time
-
 # semantics
 values and expressions
 * a value is a scalar (number string or a collection of values)
@@ -131,7 +73,6 @@ values and expressions
 * there are three types of expressions which are not values: blocks, functions, operators
     * blocks take zero arguments
     * functions and blocks
-* use python's taxonomy of [collections](https://docs.python.org/3/library/collections.abc.html#collections-abstract-base-classes)
 
 # meta-syntax v0.0
 define foreign function interface (ffi).
@@ -166,7 +107,7 @@ names (variables)
 
 literal functions
 * math operators +(add) -(sub) `*`(mul) /(div) //(idiv) !/(mod) ^(exp) /^(log)
-* unary math    +(abs) -(inv) !^(???)
+* unary math    +(abs) -(inv) !^(factorial???)
 * bool operators !(not) /+(or) `/*`(and) /-(xor) !+(nor) `!*`(nand) !-(xnor)
 * comparators /=(eq) /<(lt) />(gt) !=(ne) !<(nl) !>(ng)
 * object operator .(access) !.(safe access) `_`(typeof) `/_`(isinstance) `!_`(issubclass)
@@ -298,6 +239,87 @@ can we do auto AOS↔SOA conversion
 # tooling
 ## keyboard
 take notes from the [bqn keyboard](https://mlochbaum.github.io/BQN/tutorial/expression.html#arithmetic)
+
+
+* sequence of values
+
+# types
+* scalar - a single thing
+* sum - this or that
+* vector - this and that
+* sequence - zero or more of this
+
+# call types
+* function application
+* method application
+* map application
+* filter application
+function and method application should be in the same order, but distinguished somehow
+
+# VSO or SVO
+data is the subject
+function is the verb
+object is the arguments
+
+# adverbs
+* . (dot) - this verb is a member of a namespace
+
+# core types
+scalar
+* int
+* float
+* char
+
+sequence
+* seq - zero or more values
+* list
+* set
+* `:` pair
+* `{}` namespace (dict)
+* string
+* func
+* enum
+# core language constructs
+* assignment/definition
+* comparisons
+* algebra
+* boolean algebra
+    * and, or, xor, not
+* filter/map/reduce
+* loops/repetition
+* list/set/dict
+* function/expressions
+* class
+# booleans
+an expression is falsey if it produces no values, otherwise it is truthy
+# filtermap
+`~` is filtermap. The RHS is a function of one argument.
+filtermap returns a flattened sequence from the sequences produced by its RHS.
+'filter' is the special case where the RHS only produces zero or one value.
+'map' is the special case where the RHS produces exactly one value.
+
+# reduce
+`$` is reduce. The RHS is a function of two arguments
+
+## comparisons are special cases of filter
+x > 3 produces the left value (which is x) if x is greater than 3, otherwise it produces no values.
+the same holds for all 6 comparisons (= > < != !> !<). These are all filters.
+## arithmetic is a special case of map
+x + 3 produces the expected value `(1|2)+3 -> (4|5)`
+
+# functions
+`->` LHS is a sequence of names that are bound, RHS is either the produced sequence, or a namespace to evaluate.
+`<-` acts as yield, `<<` as return
+
+[expressions produce zero or more values](https://simon.peytonjones.org/assets/pdfs/haskell-exchange-22.pdf)
+lazy evaluation?
+```
+x := 1
+y := (x|2)
+
+abs := (x: int): int -> (x !< 0 ? x : -x)
+abs := (x: int): int -> {<- x !< 0 ? x : -x}
+```
 # ref
 * [python builtins](https://docs.python.org/3/library/functions.html)
 * [python itertools](https://docs.python.org/3/library/itertools.html)
