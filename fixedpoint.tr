@@ -13,14 +13,14 @@ ParseExpr  <- %Choice / %Sequence / (%Lookahead / %NotLookahead / %Argument) / (
 %ZeroOrMore <- %ParseExpr:4 STAR
 %OneOrMore  <- %ParseExpr:4 PLUS
 
-Primary <- (OPEN %ParseExpr CLOSE) / %Index / (%Label !LEFTARROW) / %String / %Dot
+Primary <- (OPEN %ParseExpr CLOSE) / %Index / (%Label !LEFTARROW) / %String / %CharClass / %Dot
 
 %Node <- ARG %Label
-%Index  <- %Label ':' %[9876543210]+ Spacing
-%Label <- %([abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_] [abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_9876543210]*) Spacing
+%Index  <- %Label ':' %[0-9]+ Spacing
+%Label <- %([a-zA-Z_] [a-zA-Z_0-9]*) Spacing
 
 Spacing <- (SPACE / Comment)*
-Comment <- '#' (!EOL .)* EOL
+Comment <- '#' (!EOL .)* (EOL/EOF)
 LEFTARROW  <- '<-' Spacing
 SLASH     <- '/' Spacing
 ARG       <- '%' Spacing
@@ -36,5 +36,10 @@ SPACE <- ' ' / '\t' / EOL
 EOL <- '\r\n' / '\r' / '\n'
 EOF <- !.
 
-%String <- ('"' %(!'"' Char)* '"' / "'" %(!"'" Char)* "'" /'[' %((!']' Char)+) ']') Spacing
-Char <- %('\\'  [nrt'[\]"\\] / '\\' [012] [01234567] [01234567] / '\\' [01234567] [01234567]? / !'\\' .)
+# String and CharClass can be thought of as literal forms of Char-specific Sequence and Choice.
+# They are not strictly necessary, but do make things cleaner
+%String <- ('"' %(!'"' Char)* '"' / "'" %(!"'" Char)* "'") Spacing
+%CharClass <- '[' (%(Char '-' Char) / %Char) (!']' (%(Char '-' Char) / %Char))* ']' Spacing
+
+# this needs to be matched by an escape/unescape function when squaring the circle
+Char <- %('\\'  [][nrt'"\\] / '\\' [0-2] [0-7] [0-7] / '\\' [0-7] [0-7]? / !'\\' .)

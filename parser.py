@@ -32,6 +32,7 @@ This allows a spec to be valid json.
 T = enum.Enum('T', (
     'Dot',
     'String',
+    'CharClass',
 
     'Choice',
     'Sequence',
@@ -174,7 +175,6 @@ class PackratParser(Parser):
         # need to filter out arguments, nodes
         # join sequential strings and flatten nested lists
 
-        #print(f'_trim({obj[0] if obj else obj}, {keep}, {id(memo)}')
         if memo is None:
             memo = []
         match obj:
@@ -218,10 +218,6 @@ class PackratParser(Parser):
                         body = None
                     case 1:
                         body = body[0]
-                if keep and body:
-                    #print('append')
-                    memo.append(body)
-                    pass
                 #print(f'after  list  body:{body!r}, memo:{memo!r}')
                 return body
             case _:
@@ -240,10 +236,22 @@ class PackratParser(Parser):
         if idx < len(self.text):
             return idx + 1, self.text[idx]
 
-    def String(self, idx, *literals):
-        for literal in literals:
-            if self.text.startswith(literal, idx):
-                return idx + len(literal), literal
+    def String(self, idx, literal):
+        # use idx as starting offset
+        if self.text.startswith(literal, idx):
+            return idx + len(literal), literal
+
+    def CharClass(self, idx, *chars):
+        # if we're already at the end of input then we can't match
+        if idx >= len(self.text):
+            return None
+        #print(idx, self.text[idx], chars)
+        for crange in chars:
+            # each of these values will be a single character, which comparisons sort in lexographical order.
+            #print(f'{crange[0]!r} <= {self.text[idx]!r} <= {crange[-1]!r}')
+            if crange[0] <= self.text[idx] <= crange[-1]:
+                #print('true!')
+                return idx +1, self.text[idx]
 
     def Choice(self, idx, *exprs):
         for expr in exprs:
@@ -383,17 +391,22 @@ def _fixedpoint():
     anode  = [T.Argument, [T.Label, node]]
     
     az = 'abcdefghijklmnopqrstuvwxyz'
+    az = 'a-z'
     AZ = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    AZ = 'A-Z'
     d  = '9876543210'
-    d2 = [T.String, *d[6:]]
-    d7 = [T.String, *d[2:]]
-    d9 = [T.String, *d]
+    d  = '0-9'
+    d2 = [T.CharClass, '0-2']
+    d7 = [T.CharClass, '0-7']
+    d9 = [T.CharClass, d]
+    crange = [T.Choice, [T.Argument, [T.Sequence, lchar, [T.String, '-'], lchar]], achar]
     
     q = [T.String, "'"]
-    qq = [T.String, '"']
+    Q = [T.String, '"']
     b = [T.String, '[']
     bb = [T.String, ']']
     apex = lambda i:[T.Argument, [T.Index, parseexpr, i]]
+    bs = [T.String, '\\']
     
     labels = {
         C.Entrypoint.name:[T.Node, C.Entrypoint.name, [T.Sequence, lspacing, [T.Argument, [T.OneOrMore, ldefinition]], leof]],
@@ -424,16 +437,16 @@ def _fixedpoint():
                  [T.Sequence, lopen, aparseexpr, lclose],
                  aindex,
                  [T.Sequence, alabel, [T.NotLookahead, lleftarrow]],
-                 astring, adot],
+                 astring, [T.Argument, [T.Label, T.CharClass.name]], adot],
         T.Node.name: [T.Node, T.Node.name,
             [T.Sequence, larg, alabel]],
         T.Index.name: [T.Node, T.Index.name,
                        [T.Sequence, alabel, [T.String, ':'], [T.Argument, [T.OneOrMore, d9]], lspacing]],
         T.Label.name: [T.Node, T.Label.name,
-                       [T.Sequence, [T.Argument, [T.Sequence, [T.String, *az, *AZ, '_'], [T.ZeroOrMore, [T.String, *az, *AZ, '_', *d]]]], lspacing]],
+                       [T.Sequence, [T.Argument, [T.Sequence, [T.CharClass, az, AZ, '_'], [T.ZeroOrMore, [T.CharClass, az, AZ, '_', d]]]], lspacing]],
 
         spacing: [T.ZeroOrMore, [T.Choice, lspace, lcomment]],
-        comment: [T.Sequence, [T.String, '#'], [T.ZeroOrMore, [T.Sequence, [T.NotLookahead, leol], [T.Dot]]], leol],
+        comment: [T.Sequence, [T.String, '#'], [T.ZeroOrMore, [T.Sequence, [T.NotLookahead, leol], [T.Dot]]], [T.Choice, leol, leof]],
         leftarrow: [T.Sequence, [T.String, '<-'], lspacing],
         slash: [T.Sequence, [T.String, '/'], lspacing],
         arg: [T.Sequence, [T.String, '%'], lspacing],
@@ -448,26 +461,43 @@ def _fixedpoint():
         space: [T.Choice, [T.String, ' '], [T.String, '\t'], leol],
         eol: [T.Choice, [T.String, '\r\n'], [T.String, '\r'], [T.String, '\n']],
         eof: [T.NotLookahead, [T.Dot]],
+        T.CharClass.name: [T.Node, T.CharClass.name, [T.Sequence, b, 
+                         crange, [T.ZeroOrMore, [T.Sequence, [T.NotLookahead, bb], crange]],
+                         bb, lspacing]],
         T.String.name: [T.Node, T.String.name,
                         [T.Sequence, [T.Choice,
-                            [T.Sequence, qq, [T.Argument, [T.ZeroOrMore, [T.Sequence, [T.NotLookahead, qq], achar]]], qq],
-                            [T.Sequence, q, [T.Argument, [T.ZeroOrMore, [T.Sequence, [T.NotLookahead, q], achar]]], q],
-                            [T.Sequence, b, [T.OneOrMore, [T.Argument, [T.Sequence, [T.NotLookahead, bb], achar]]], bb]
+                            [T.Sequence, Q, [T.Argument, [T.ZeroOrMore, [T.Sequence, [T.NotLookahead,  Q], lchar]]], Q],
+                            [T.Sequence, q, [T.Argument, [T.ZeroOrMore, [T.Sequence, [T.NotLookahead,  q], lchar]]], q],
                         ], lspacing]],
         char: [T.Argument, [T.Choice,
-               [T.Sequence, [T.String, '\\'], [T.String, *"nrt'[]\"\\"]],
-               [T.Sequence, [T.String, '\\'], d2, d7, d7],
-               [T.Sequence, [T.String, '\\'], d7,[T.ZeroOrOne, d7]],
-               [T.Sequence, [T.NotLookahead, [T.String, '\\']], [T.Dot]] ]],
+               [T.Sequence, bs, [T.CharClass, *"][nrt'\"\\"]],
+               [T.Sequence, bs, d2, d7, d7],
+               [T.Sequence, bs, d7,[T.ZeroOrOne, d7]],
+               [T.Sequence, [T.NotLookahead, bs], [T.Dot]] ]],
     }
     return BuildParser(**labels), labels
 
 fixedpoint, labels = _fixedpoint()
 
+escape_map = {'\n':'\\n', '\t':'\\t', '\r':'\\r', '\\':'\\\\'}
+def escape(string, cmap=escape_map, undo=False):
+    if undo:
+        for k,v in cmap.items():
+            string = string.replace(v, k)
+    else:
+        for k,v in cmap.items():
+            string = string.replace(k, v)
+    return string
+def unescape(string, cmap=escape_map):
+    return escape(string, cmap, undo=True)
+
 # TODO this is really an evaluator and should be in a separate file
 def squaredCircle(tree):
     match tree:
-        case [C.Entrypoint.name, *exprs]:
+        case [C.Entrypoint.name, [C.Definition.name, *args]]:
+            pass
+            exprs = [[C.Definition.name, *args]]
+        case [C.Entrypoint.name, exprs]:
             pass
         case _:
             raise ValueError
@@ -477,7 +507,9 @@ def squaredCircle(tree):
             case [T.Index.name, [T.Label.name, name], idx]:
                 return [T.Index, name, int(idx)]
             case [T.String.name, s]:
-                return [T.String, s.replace('\\n', '\n').replace('\\t', '\t').replace('\\r', '\r')]
+                return [T.String, unescape(s)]
+            case [T.CharClass.name, *args]:
+                return [T.CharClass, *map(unescape, args)]
             case [t, *b]:
                 return [T[t], *(walk(x) for x in b)]
             case _:
@@ -485,10 +517,13 @@ def squaredCircle(tree):
     for expr in exprs:
         match expr:
             case [C.Definition.name, [T.Label.name, lname], body]:
+                #print(f'processing label {lname}')
                 labels[lname] = walk(body)
             case [C.Definition.name, [T.Node.name, [T.Label.name, nname]], body]:
+                #print(f'processing node  {nname}')
                 labels[nname] = walk([T.Node.name, nname, body])
             case _:
+                print(f'not processing {expr!r}')
                 pass
     return labels
 
