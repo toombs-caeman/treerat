@@ -133,11 +133,16 @@ class PackratParser(Parser):
         for f in self.cached_funcs:
             f.cache_clear()
         result = self.label_funcs[C.Entrypoint.name](0)
+        if result is None:
+            return None
+        _, result = result
         # TODO
-        return result
+        #return result
         #print(result[1])
         if result:
-            return self._trim(result[1])
+            memo = []
+            self._trim(result, memo=memo)
+            return memo[0]
         return None
 
     def fmt(self, tree) -> str:
@@ -169,72 +174,56 @@ class PackratParser(Parser):
         # need to filter out arguments, nodes
         # join sequential strings and flatten nested lists
 
-        # a node should reach down to just its arguments
-        # a label s
-        #def node(n, memo):
-        #    match n:
-        #        case [T.Node, *_]:
-        #            return memo
-        #        case [T.Label, *_]:
-        #            pass
-        #        case [T.Argument, body]: memo.append(argument(body))
-        #        case list():
-        #            for x in n:
-        #                node(x, memo)
-        #def argument(n):
-        #    match n:
-        #        case [T.Node, *args]:
-        #            return node(n, [])
-        #        case [T.Label, body]:
-        #            return label(body)
-        #        case [T.Argument, body]:
-        #            return argument(body)
-
-        #    if not isinstance(n, list):
-        #        return memo
-        #    # search for arguments
-
-        #    return memo
-
         #print(f'_trim({obj[0] if obj else obj}, {keep}, {id(memo)}')
+        if memo is None:
+            memo = []
         match obj:
             case [T.Node, name, body]:
                 if not keep:
                     return
-                #memo = namedlist([name], name='node')
                 memo = [name]
-                self._trim(body, False, memo)
+                #print(f'before node  {name}  body:{body!r} memo:{memo!r}')
+                body = self._trim(body, False, memo)
+                #print(f'after  node  {name}  body:{body!r} memo:{memo!r}')
                 return memo
             case [T.Argument, body]:
-                body = self._trim(body, True, memo)
-                if memo is not None and memo is not body:
-                    memo.append(body)
+                #print(f'before arg   {memo[0] if memo else ""!r} body:{body!r} memo:{memo!r}')
+                body = self._trim(body, True, [])
+                memo.append(body)
+                #print(f'after  arg   {memo[0] if memo else ""!r} body:{body!r} memo:{memo!r}')
                 return body
             case [T.Label, name, body]:
                 if not keep:
                     return
-                #memo2 = namedlist(name='label') if memo else memo
-                memo2 = [] if memo else memo
-                body = self._trim(body, keep, memo2)
-                return memo2
+                memo2 = []
+                #print(f'before label {name} body:{body!r} memo2:{memo2!r}')
+                body = self._trim(body, False, memo2)
+                #print(f'after  label {name} body:{body!r} memo2:{memo2!r}')
+                return body
             case list():
-                #out = namedlist(name='list')
-                out = []
+                #print(f'before list  body:{obj!r} memo:{memo!r}')
+                body = []
                 prev_str = False
                 for a in obj:
                     x = self._trim(a, keep, memo)
                     cur_str = isinstance(x, str)
                     if prev_str and cur_str:
-                        out[-1]+=x
+                        body[-1]+=x
                     else:
                         if x:
-                            out.append(x)
+                            body.append(x)
                     prev_str = cur_str
-                if len(out) == 1:
-                    return out[0]
-                if not out:
-                    return None
-                return out
+                match len(body):
+                    case 0:
+                        body = None
+                    case 1:
+                        body = body[0]
+                if keep and body:
+                    #print('append')
+                    memo.append(body)
+                    pass
+                #print(f'after  list  body:{body!r}, memo:{memo!r}')
+                return body
             case _:
                 return obj
 
@@ -310,15 +299,13 @@ class PackratParser(Parser):
             return idx, [T.Argument, v]
 
     def Label(self, idx, name):
+        #return self.label_funcs[name](idx)
         if (x:=self.label_funcs[name](idx)):
             idx,v = x
             return idx, [T.Label, name, v]
 
     def Index(self, idx, name, offset):
         return self.Label(idx, (name, offset))
-        if (x:=self.label_funcs[name, offset](idx)):
-            idx,v = x
-            return idx, [T.Label, v]
 
 def _fixedpoint():
     # names
@@ -335,6 +322,7 @@ def _fixedpoint():
     node = T.Node.name
     argument = T.Argument.name
     definition = C.Definition.name
+    dot = T.Dot.name
     parseexpr = 'ParseExpr'
     primary = 'Primary'
     spacing = 'Spacing'
@@ -349,7 +337,6 @@ def _fixedpoint():
     plus = 'PLUS'
     OPEN = 'OPEN'
     close = 'CLOSE'
-    dot = 'DOT'
     space = 'SPACE'
     eol = 'EOL'
     eof = 'EOF'
@@ -374,6 +361,7 @@ def _fixedpoint():
     llabel = [T.Label, label]
     lchar = [T.Label, char]
     lnode = [T.Label, node]
+    ldefinition = [T.Label, definition]
     
     # labels
     anotlookahead = [T.Argument, [T.Label, notlookahead]]
@@ -408,36 +396,42 @@ def _fixedpoint():
     apex = lambda i:[T.Argument, [T.Index, parseexpr, i]]
     
     labels = {
-        C.Entrypoint.name:[T.Node, C.Entrypoint.name, [T.Sequence, lspacing, [T.OneOrMore, adefinition], leof]],
+        C.Entrypoint.name:[T.Node, C.Entrypoint.name, [T.Sequence, lspacing, [T.Argument, [T.OneOrMore, ldefinition]], leof]],
         definition:[T.Node, definition,
-            [T.Sequence, [T.Choice, alabel, anode], lleftarrow, aparseexpr]],
-        parseexpr: [T.Choice, achoice, asequence, [T.Choice, azeroorone, azeroormore, aoneormore], [T.Choice, alookahead, anotlookahead, aargument], aprimary],
+            [T.Sequence, [T.Argument, [T.Choice, llabel, lnode]], lleftarrow, aparseexpr]],
+        parseexpr: [T.Choice, achoice, asequence, [T.Choice, alookahead, anotlookahead, aargument], [T.Choice, azeroorone, azeroormore, aoneormore],  aprimary],
     
         T.Choice.name: [T.Node, T.Choice.name,
             [T.Sequence, apex(1), [T.OneOrMore, [T.Sequence, lslash, apex(1)]]]],
         T.Sequence.name: [T.Node, T.Sequence.name,
             [T.Sequence, [T.Argument, [T.Index, parseexpr, 2]], [T.OneOrMore, [T.Argument, [T.Index, parseexpr, 2]]]]],
-        T.ZeroOrOne.name: [T.Node, T.ZeroOrOne.name,
-            [T.Sequence, [T.Argument, [T.Index, parseexpr, 3]], lquestion]],
-        T.ZeroOrMore.name: [T.Node, T.ZeroOrMore.name,
-            [T.Sequence, [T.Argument, [T.Index, parseexpr, 3]], lstar]],
-        T.OneOrMore.name: [T.Node, T.OneOrMore.name,
-            [T.Sequence, [T.Argument, [T.Index, parseexpr, 3]], lplus]],
+
         T.Lookahead.name: [T.Node, T.Lookahead.name,
-            [T.Sequence, lamp, [T.Argument, [T.Index, parseexpr, 4]]]],
+            [T.Sequence, lamp, [T.Argument, [T.Index, parseexpr, 3]]]],
         T.NotLookahead.name: [T.Node, T.NotLookahead.name,
-            [T.Sequence, lbang, [T.Argument, [T.Index, parseexpr, 4]]]],
+            [T.Sequence, lbang, [T.Argument, [T.Index, parseexpr, 3]]]],
         T.Argument.name: [T.Node, T.Argument.name,
-            [T.Sequence, larg, [T.Argument, [T.Index, parseexpr, 4]]]],
-        T.Node.name: [T.Node, T.Node.name,
-            [T.Sequence, larg, alabel]],
+            [T.Sequence, larg, [T.Argument, [T.Index, parseexpr, 3]]]],
+
+        T.ZeroOrOne.name: [T.Node, T.ZeroOrOne.name,
+            [T.Sequence, [T.Argument, [T.Index, parseexpr, 4]], lquestion]],
+        T.ZeroOrMore.name: [T.Node, T.ZeroOrMore.name,
+            [T.Sequence, [T.Argument, [T.Index, parseexpr, 4]], lstar]],
+        T.OneOrMore.name: [T.Node, T.OneOrMore.name,
+            [T.Sequence, [T.Argument, [T.Index, parseexpr, 4]], lplus]],
+
         primary:[T.Choice,
                  [T.Sequence, lopen, aparseexpr, lclose],
                  aindex,
                  [T.Sequence, alabel, [T.NotLookahead, lleftarrow]],
                  astring, adot],
+        T.Node.name: [T.Node, T.Node.name,
+            [T.Sequence, larg, alabel]],
         T.Index.name: [T.Node, T.Index.name,
                        [T.Sequence, alabel, [T.String, ':'], [T.Argument, [T.OneOrMore, d9]], lspacing]],
+        T.Label.name: [T.Node, T.Label.name,
+                       [T.Sequence, [T.Argument, [T.Sequence, [T.String, *az, *AZ, '_'], [T.ZeroOrMore, [T.String, *az, *AZ, '_', *d]]]], lspacing]],
+
         spacing: [T.ZeroOrMore, [T.Choice, lspace, lcomment]],
         comment: [T.Sequence, [T.String, '#'], [T.ZeroOrMore, [T.Sequence, [T.NotLookahead, leol], [T.Dot]]], leol],
         leftarrow: [T.Sequence, [T.String, '<-'], lspacing],
@@ -448,14 +442,12 @@ def _fixedpoint():
         question: [T.Sequence, [T.String, '?'], lspacing],
         star: [T.Sequence, [T.String, '*'], lspacing],
         plus: [T.Sequence, [T.String, '+'], lspacing],
-        OPEN: [T.Sequence, [T.String, '('], lspacing],
+        OPEN: [T.Sequence, [T.Argument, [T.String, '(']], lspacing],
         close: [T.Sequence, [T.String, ')'], lspacing],
-        dot: [T.Sequence, [T.String, '.'], lspacing],
+        dot: [T.Node, T.Dot.name, [T.Sequence, [T.String, '.'], lspacing]],
         space: [T.Choice, [T.String, ' '], [T.String, '\t'], leol],
-        eol: [T.String, '\r\n', '\r', '\n'],
+        eol: [T.Choice, [T.String, '\r\n'], [T.String, '\r'], [T.String, '\n']],
         eof: [T.NotLookahead, [T.Dot]],
-        T.Label.name: [T.Node, T.Label.name,
-                       [T.Sequence, [T.Argument, [T.Sequence, [T.String, *az, *AZ, '_'], [T.ZeroOrMore, [T.String, *az, *AZ, '_', *d]]]], lspacing]],
         T.String.name: [T.Node, T.String.name,
                         [T.Sequence, [T.Choice,
                             [T.Sequence, qq, [T.Argument, [T.ZeroOrMore, [T.Sequence, [T.NotLookahead, qq], achar]]], qq],
@@ -482,6 +474,10 @@ def squaredCircle(tree):
     labels = {}
     def walk(b):
         match b:
+            case [T.Index.name, [T.Label.name, name], idx]:
+                return [T.Index, name, int(idx)]
+            case [T.String.name, s]:
+                return [T.String, s.replace('\\n', '\n').replace('\\t', '\t').replace('\\r', '\r')]
             case [t, *b]:
                 return [T[t], *(walk(x) for x in b)]
             case _:

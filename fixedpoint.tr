@@ -1,6 +1,5 @@
-%Entrypoint <- Spacing %(ParseNode / ParseLabel)+ EOF
-%ParseNode <- ARG %Label LEFTARROW %ParseExpr
-%ParseLabel <-    %Label LEFTARROW %ParseExpr
+%Entrypoint <- Spacing %Definition+ EOF
+%Definition <-  %(Label/Node) LEFTARROW %ParseExpr
 ParseExpr  <- %Choice / %Sequence / (%Lookahead / %NotLookahead / %Argument) / (%ZeroOrOne / %ZeroOrMore / %OneOrMore) / %Primary
 
 %Choice   <- %ParseExpr:1 (SLASH %ParseExpr:1)+
@@ -14,12 +13,13 @@ ParseExpr  <- %Choice / %Sequence / (%Lookahead / %NotLookahead / %Argument) / (
 %ZeroOrMore <- %ParseExpr:4 STAR
 %OneOrMore  <- %ParseExpr:4 PLUS
 
-Primary <- (OPEN %ParseExpr CLOSE) / %Index / (%Label !LEFTARROW) / %String / %Class / %DOT
+Primary <- (OPEN %ParseExpr CLOSE) / %Index / (%Label !LEFTARROW) / %String / %Dot
 
-%Index  <- %Label ':' %[0123456789]+
-%Label <- %([abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_] [abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789]*) Spacing
+%Node <- ARG %Label
+%Index  <- %Label ':' %[9876543210]+ Spacing
+%Label <- %([abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_] [abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_9876543210]*) Spacing
 
-Spacing <- (Space / Comment)*
+Spacing <- (SPACE / Comment)*
 Comment <- '#' (!EOL .)* EOL
 LEFTARROW  <- '<-' Spacing
 SLASH     <- '/' Spacing
@@ -29,11 +29,11 @@ BANG      <- '!' Spacing
 QUESTION  <- '?' Spacing
 STAR      <- '*' Spacing
 PLUS      <- '+' Spacing
-OPEN      <- '(' Spacing
+OPEN      <- %'(' Spacing
 CLOSE     <- ')' Spacing
-%DOT      <- '.' Spacing
-Space <- ' ' / '\\t' / EOL
-EOL <- '\\r\\n' / '\\r' / '\\n'
+%Dot      <- '.' Spacing
+SPACE <- ' ' / '\t' / EOL
+EOL <- '\r\n' / '\r' / '\n'
 EOF <- !.
 
 %String <- ('"' %(!'"' Char)* '"' / "'" %(!"'" Char)* "'" /'[' %((!']' Char)+) ']') Spacing

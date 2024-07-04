@@ -25,54 +25,51 @@ class Run(unittest.TestCase):
         with open('fixedpoint.tr', 'r') as f:
             lines = f.readlines()
 
-        _, tree = parse('a <- ( b c)')
-        tree = fixedpoint._trim(tree)
-        self.assertEqual(
-                tree,
-                ['Entrypoint',
-                    ['Definition',
-                        ['Label', 'a'],
-                        ['Sequence', ['Label', 'b'], ['Label', 'c']]
-                    ]
-                ],
-        )
-
-        # double check that the first line parses as expected
-        tree = parse(lines[0]) # lines[0]
-        #pp(tree)
-        tree = fixedpoint._trim(tree)
+        tree = parse('a <- ( b cd)')
         pp(tree)
         self.assertEqual(
+                ['Entrypoint',
+                ['Definition', ['Label', 'a'], ['Sequence', ['Label', 'b'], ['Label', 'cd']]]],
                 tree,
+        )
+
+        # double check that the first line of the fixed point parses as expected
+        tree = parse(lines[0]) # lines[0]
+        pp(tree)
+        self.assertEqual(
                 ['Entrypoint',
                  ['Definition',
                   ['Node', ['Label', 'Entrypoint']],
                   ['Sequence',
                    ['Label', 'Spacing'],
-                   ['OneOrMore', ['Argument', ['Label', 'Definition']]],
+                   ['Argument', ['OneOrMore', ['Label', 'Definition']]],
                    ['Label', 'EOF']
                 ]]],
+                tree,
         )
         # check that this parsing is a fixed point
         tree = squaredCircle(tree)[C.Entrypoint.name]
+        pp(tree)
         self.assertEqual(labels[C.Entrypoint.name], tree)
 
         # find any lines that don't parse individually
         for line in lines:
+            # blank lines shouldn't parse by themselves, so ignore them
+            if line == '\n':
+                continue
             tree = parse(line)
-            self.assertIsNotNone(tree, msg=line)
+            self.assertIsNotNone(tree, msg=f'could not parse {line!r}')
             new_labels = squaredCircle(tree)
             for k,v in new_labels.items():
-                self.assertEqual(labels[k], v, msg=f'label {k} deviates from fixed point.')
+                self.assertEqual(labels[k], v, msg=f'label {k!r} deviates from fixed point.')
 
         # check the full circle
         tree = parse(''.join(lines))
         #pp(tree)
-        return
         self.assertEqual(
                 labels,
                 squaredCircle(tree),
-                msg="fixed point not fixed"
+                msg="fixed point not fixed, circle != square"
         )
 
     @unittest.skip('not working on this yet')
