@@ -165,7 +165,7 @@ class PackratParser(Parser):
                 case x:
                     raise ValueError(f'unexpected value in tree: {x!r}')
             yield ''
-        return ''.join(walk(self.spec, tree))
+        return ''.join(walk(self.labels, tree))
         
 
     def _trim(self, obj, keep=True, memo=None):

@@ -13,3 +13,8 @@ Arguably though, they are a special form of Sequence and Choice over Char
 # 7-03
 9.5-11: separate string from character class
 11.5-13.5: separate string from character class, testBuildMath
+
+
+# todo
+* optim: make sure that trim isn't doing extraneous work
+* optim: clean up parser internals to make them easier to reason about and port

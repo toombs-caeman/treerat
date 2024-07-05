@@ -62,7 +62,7 @@ class Run(unittest.TestCase):
                 msg="fixed point not fixed, circle != square"
         )
 
-    @unittest.skip('not working on this yet')
+    @unittest.skip('make forward parsing solid first')
     def testInverseParse(self):
         """
         Try re-formatting a parse tree back into code using a different parser than what generated it
@@ -70,11 +70,19 @@ class Run(unittest.TestCase):
         This is the inverse operation of parsing (also called fmt?)
         """
         # given a spec and valid parse tree, format the tree back into a string
-        p = BuildParser([T.Dot])
-        #self.assertEqual(p.parse('abcd'), 'a')
-        self.assertEqual(p.fmt('a'), 'a')
-        self.assertEqual(p.fmt('ab'), None, msg="Non-conforming input should be rejected")
-        return
+        test_ok = {
+                'a':BuildParser([T.Argument, [T.Dot]]),
+        }
+        for code, parser in test_ok.items():
+            tree = parser.parse(code)
+            self.assertIsNotNone(tree, msg="precondition failed: input not parsed")
+            self.assertEqual(code, parser.fmt(tree), msg="parse•fmt does not form fixed point")
+
+        test_fail = {
+                BuildParser([T.Argument, [T.Dot]]): None
+        }
+        for parser, tree in test_fail.items():
+            self.assertIsNone(parser.fmt(tree), msg="Non-conforming input should be rejected")
 
 
     def testBuildMath(self):

@@ -12,6 +12,7 @@ The initial language is intentionally simple, only able to modify itself.
 
 It works by starting with a minimum viable language (MVL) that can only modify its own parser and interpreter or define new functions in a host language.
 
+* [original inspo](https://blog.bruce-hill.com/packrat-parsing-from-scratch)
 # current status
 version 0.1 initial implementation phase
 
@@ -172,6 +173,9 @@ This snippet defines how to parse algebraic expression using the normal preceden
 * version 1.0
     * standalone interpreters/semantics?
 
+# parsing debugging
+* detect mutual left recursion
+* point out probable syntax errors when failing to parse
 # features to play with later
 * inline snapshot testing
 * can name everything, don't have to name anything
