@@ -1,7 +1,3 @@
-# TODO
-* Each parsing definition should explicitly mark the sections that are kept, with the default being none. While this worsens the syntax, it makes trimming the tree much easier
-* unfmt
-
 # treerat
 
 This is a language for rapidly prototyping domain specific languages (DSLs) hosted within a general purpose language (GPL).
@@ -16,11 +12,12 @@ It works by starting with a minimum viable language (MVL) that can only modify i
 # current status
 version 0.1 initial implementation phase
 
-Error handling & reporting needs to be better. The parser to interpreter loop needs to be tightened up, and there seem to be some bugs in the initial AST.
+Error handling & reporting needs to be better. The parser to interpreter loop needs to be tightened up.
 
 
 # the initial language
 The parser is a packrat parser with a modifiable internal representation of the current grammar and the remaining input.
+
 # MVL design considerations
 * The implementation should be small and straightforward above all else. I want the MVL to be as easy to understand and to hack as possible.
 * don't use fancy language features to implement the MVL. It should be a nearly one to one translation to any another host language.
@@ -173,10 +170,15 @@ This snippet defines how to parse algebraic expression using the normal preceden
 * version 1.0
     * standalone interpreters/semantics?
 
-# parsing debugging
-* detect mutual left recursion
+# parse debugging
+* detect mutual left recursion as a value error for parsers
 * point out probable syntax errors when failing to parse
+
 # features to play with later
+* embed debug visualization types as an extension of debug symbols
+    * how should utilization of a function be visualized in a debugging context?
+    * expected data size?
+    * expected runtime? to flag functions that are underperforming
 * inline snapshot testing
 * can name everything, don't have to name anything
     * DeBrujin naming
@@ -197,12 +199,38 @@ This snippet defines how to parse algebraic expression using the normal preceden
 * language primitives exposing heap/stack differences, or other low level concepts should not be 'default'. The default numeric type should be bignum, but let `u32` be specified. default sequence type should be a vector (variable size/type), but allow array (const size, uniform type) be specified.
 * separate language into high and low level primitives, high level primitives are expressible multiple ways using low level primitives, chosen by static analysis and optimization level (for example [] would mean 'any sequence' unless given an explicit annotation, depending on usage it could compile to array or a vector).
 * high level types are collections of traits, any low level structure which implements those traits may be used at compile time
+* a type should be capable of reflecting any arbitrary rules a programmer knows about the bounds of a value (integers in range, 0<=float<1)
+    * bounded number types (aka enums, but not necessarily enumerable)
+        * let x be a float in [0, 1]. on cast from float, clamp
+        * let y be an int [0, 8). on cast from int, mod 8
+        * let bool be int 0 or 1. on cast from float, fail
+    * typed strings for embedded langauges, with custom value escaping / formatting
+        * regex
+        * sql queries
+        * these are used as special form literal values, but cannot be checked by the type system because the cast from string is usually implemented by a library
+* interface driven types
 * [comptime](https://kristoff.it/blog/what-is-zig-comptime/)
 * embed sqlite in the language
 * use python's taxonomy of [collections](https://docs.python.org/3/library/collections.abc.html#collections-abstract-base-classes)
 * consise lambda function
 * function lifting
+    `obj.{a,b,c}` returns dict {'a':obj.a, 'b':obj.b, 'c': obj.c}
+    `obj.[a,b,c]` returns list ['a':obj.a, 'b':obj.b, 'c': obj.c]
+
+* rewrite it in forth?
+* rewrite it in rust
+    * native types: null, int, float, complex, string, map, set, list, matrix
+
+# forth implementations
+* [jonesforth](https://github.com/nornagon/jonesforth/blob/master/jonesforth.S)
+* [lina forth](http://home.hccnet.nl/a.w.m.van.der.horst/lina.html)
+* [gforth](https://en.wikipedia.org/wiki/Gforth)
+* fig-Forth
+* F83
 # reference
+* [programming language design](https://toombs-caeman.github.io/pl)
+* [scrapscript](https://scrapscript.org/)
+    * content addressable code
 * [katahdin](https://chrisseaton.com/katahdin/)
 * [syntax across languages](http://rigaux.org/language-study/syntax-across-languages.html)
 * [minima](https://github.com/TheRealMichaelWang/minima)
@@ -223,3 +251,7 @@ This snippet defines how to parse algebraic expression using the normal preceden
 * [python itertools](https://docs.python.org/3/library/itertools.html)
 * [bqn](https://mlochbaum.github.io/BQN/tutorial/expression.html)
 * [elixir](https://learnxinyminutes.com/docs/elixir/)
+
+[regex-vis](https://regex-vis.com/?r=%2F%5E%28%28%5BhH%5Dacker%29%5B+%5D%3F%28%5BnN%5Dews%7Cnewsletter%29%29%24%2F)
+[discussion regex-vis](https://news.ycombinator.com/item?id=31307123)
+[regex101](https://regex101.com/)

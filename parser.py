@@ -1,20 +1,5 @@
 import enum
 from functools import cache, wraps
-from collections import UserList
-
-class namedlist(UserList):
-    def __init__(self, arg=(), name=None):
-        super().__init__(arg)
-        self.name = name
-        
-    def __str__(self):
-        if self.name:
-            return self.name + super().__str__()
-        return super().__str__()
-    def __repr__(self):
-        if self.name:
-            return self.name + super().__repr__()
-        return super().__repr__()
 
 
 #__all__ = ['BuildParser', 'T']
@@ -128,6 +113,11 @@ class PackratParser(Parser):
             if s and s[0] == T.Node:
                 s = [T.Argument, s]
             self.label_funcs[label] = walk(s)
+    def update(self, **labels):
+        l = {}
+        l.update(self.labels)
+        l.update({k:squaredCircle(v) for k,v in labels.items()})
+        self.__init__(**l)
 
     def parse(self, text):
         self.text = text
@@ -500,7 +490,7 @@ def squaredCircle(tree):
         case [C.Entrypoint.name, exprs]:
             pass
         case _:
-            raise ValueError
+            exprs = [tree]
     labels = {}
     def walk(b):
         match b:

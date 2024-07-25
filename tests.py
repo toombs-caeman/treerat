@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 import unittest
 from parser import *
-from pprint import pprint as pp
 
 
 class Run(unittest.TestCase):
