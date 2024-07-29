@@ -1,4 +1,3 @@
-# reference https://github.com/mapio/GraphvizAnim/blob/master/examples/dfv.py
 import subprocess
 import tempfile
 import copy
@@ -16,11 +15,13 @@ class Digraph(graphviz.Digraph):
         super().__init__(*args, **kwargs)
         self.__previous = []
     def next_step(self, reset:bool|int=False):
+        """add a new frame to the graph animation and optionally reset the graph to a previous frame"""
         reset = -int(reset)
         self.__previous.append(copy.deepcopy(self))
         if reset:
             self.body = self.__previous[reset-1].body
     def gif(self, outfile:str, delay=100):
+        """create an animated gif"""
         filecount = len(self.__previous) + 1
         #print(f'making {filecount} temp files')
         files = [tempfile.NamedTemporaryFile(suffix='.png') for _ in range(filecount)]
@@ -35,38 +36,6 @@ class Digraph(graphviz.Digraph):
         subprocess.call(cmd)
         for f in files:
             f.close()
-
-
-
-def build(code, base_parser=parser.fixedpoint):
-    v = base_parser.parse(code)
-    return parser.BuildParser(**parser.squaredCircle(v))
-
-math_lang = """
-%Entrypoint <- EOL (%Assign / %Print)* !.
-%Assign <- %Var EQUAL %Expr EOL
-%Print   <- %Expr EOL
-
-Expr    <- (%Add / %Sub) / (%Mul / %Div) / OPEN %Expr CLOSE / %Float / %Int / %Var
-%Add    <- %Expr:1 PLUS %Expr
-%Sub    <- %Expr:1 MINUS %Expr
-%Mul    <- %Expr:2 (STAR %Expr:1)+
-%Div    <- %Expr:2 (SLASH %Expr:1)+
-%Float  <- %([0-9]+ '.' [0-9]+) SPACE
-%Int  <- %[0-9]+ SPACE
-%Var    <- %[a-z]+ SPACE
-
-OPEN    <- '(' SPACE
-CLOSE   <- ')' SPACE
-EQUAL   <- '=' SPACE
-PLUS    <- '+' SPACE
-MINUS   <- '-' SPACE
-STAR    <- '*' SPACE
-SLASH   <- '/' SPACE
-SPACE   <- ' '*
-EOL     <- [; \\n]*
-"""
-mp = build(math_lang)
 
 def comp_viz(comps:dict, effects=(), order=(), name='comp'):
     effects = tuple(map(str, effects))
@@ -146,12 +115,9 @@ def ast_viz(ast):
     return vis
 
 if __name__=="__main__":
-    ast = mp.parse("""
-        x = 1 + 2
-        x + 1
-        x = x + 2
-        x * 3.14
-    """)
+    import testlang
+    
+    ast = testlang.sample_ast
     #print(ast)
     if ast is None:
         print('parse failed')
@@ -160,10 +126,10 @@ if __name__=="__main__":
     ast_viz(ast).render(outfile='ast.png', cleanup=True, format='png') #, view=True)
 
     # name resolution / computation graph generation
-    names = {}
     comps = {} # units of computation, keyed by their hash
-    order = defaultdict(set) # for each comp, keep a set of preceeding comps
-    effects = [] # a sequence of computations with stateful effects
+    names = {} # comp hashes, keyed by a name which currently refer to them
+    order = defaultdict(set) # for each comp hash, keep a set of preceeding comp hashes (for topological sort)
+    effects = [] # a sequence of comp hashes with stateful effects (and which therefore must be fully ordered)
     def add_comp(comp):
         h = hash(comp)
         comps[h] = comp
@@ -184,6 +150,7 @@ if __name__=="__main__":
                 for s in stmts:
                     x(s)
             case ['Assign', ['Var', name], val]:
+                # notice that this step fully eliminates names from the output
                 names[name] = x(val)
             case ['Print', expr]:
                 add_effect(('print', x(expr)))
@@ -209,6 +176,3 @@ if __name__=="__main__":
 
     # visualize computation
     comp_viz(comps, effects, order).gif('compute.gif')
-
-
-

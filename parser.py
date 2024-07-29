@@ -128,8 +128,7 @@ class PackratParser(Parser):
             return None
         _, result = result
         # TODO
-        #return result
-        #print(result[1])
+        #print(result)
         if result:
             memo = []
             self._trim(result, memo=memo)
