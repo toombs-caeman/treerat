@@ -258,3 +258,11 @@ This snippet defines how to parse algebraic expression using the normal preceden
 [regex101](https://regex101.com/)
 
 * [semantic versioning](https://semver.org/)
+
+# compilation
+* parser (source code -> ast)
+* graph generation (ast, (ast_t -> func) -> cg)
+    * name resolution, scoping
+    * type checking, inference
+    * match boson types to evaluation
+* 

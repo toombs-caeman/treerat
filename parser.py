@@ -81,6 +81,7 @@ class PackratParser(Parser):
         self.labels = {C.Entrypoint.name:Entrypoint, **labels}
         self.cached_funcs = []
         self.label_funcs = {}
+        self.extent = 0
         def walk(spec):
             # validate spec
             if not isinstance(spec, (list, tuple)) or not isinstance(spec[0], T):
@@ -92,7 +93,10 @@ class PackratParser(Parser):
 
             @wraps(method)
             def call(idx):
-                return method(idx, *args)
+                if (x:=method(idx, *args)):
+                    idx, v = x
+                    self.extent = max(self.extent, idx)
+                return x
 
             # index may need to create new labels that aren't explicitly given
             if t == T.Index and args not in self.label_funcs:
@@ -123,8 +127,21 @@ class PackratParser(Parser):
         self.text = text
         for f in self.cached_funcs:
             f.cache_clear()
+        self.extent = 0
         result = self.label_funcs[C.Entrypoint.name](0)
         if result is None:
+            lines = text.split('\n')
+            lineno = text.count('\n', 0, self.extent)
+            if lineno > 0:
+                print(f'{lineno-1:03}:{lines[lineno-1]}')
+                pre = text.rfind('\n', 0, self.extent)
+            else:
+                pre = 0
+            print(f'{lineno:03}:{lines[lineno]}')
+            print('^'.rjust(self.extent-pre + 4, ' '))
+            print(f'{lineno+1:03}:{lines[lineno+1]}')
+            print(f'ParseError: failed after line={lineno} char={pre}')
+
             return None
         _, result = result
         # TODO
@@ -139,6 +156,8 @@ class PackratParser(Parser):
         # TODO setup inverse parsing (fmt)
         # create a lens that lets you iterate over a trees arguments
         # paths : List[List[int]] with negative numbers indicating going up the tree
+        # re-parse the original grammar and eval with new semantics
+
 
         # return None if the tree cannot match the spec
         def walk(spec, tree):
@@ -379,11 +398,8 @@ def _fixedpoint():
     achar = [T.Argument, [T.Label, char]]
     anode  = [T.Argument, [T.Label, node]]
     
-    az = 'abcdefghijklmnopqrstuvwxyz'
     az = 'a-z'
-    AZ = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
     AZ = 'A-Z'
-    d  = '9876543210'
     d  = '0-9'
     d2 = [T.CharClass, '0-2']
     d7 = [T.CharClass, '0-7']
@@ -482,6 +498,7 @@ def unescape(string, cmap=escape_map):
 
 # TODO this is really an evaluator and should be in a separate file
 def squaredCircle(tree):
+    """convert an AST into labels suitable to build a parser."""
     match tree:
         case [C.Entrypoint.name, [C.Definition.name, *args]]:
             pass
