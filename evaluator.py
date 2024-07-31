@@ -23,6 +23,7 @@ class RuntimeError(Exception):
 
 class TreeWalk(Evaluator):
     """
+    A base class for tree walk evaluators.
     Each method receives unevaluated arguments to the corresponding AST node and should return the evaluated expression.
     """
     def __init__(self):

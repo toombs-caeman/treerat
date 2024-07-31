@@ -52,8 +52,8 @@ derivative functions
 * eval - define function in host, then load through ffi
 * pause - save the current state of the interpreter such that it can be restarted. (execution will restart at boot function)
 
-# Grammar
-from https://bford.info/pub/lang/peg.pdf
+# Fixed Point Grammar
+modified from the [original paper](https://bford.info/pub/lang/peg.pdf)
 ```
 %main <- Spacing %Definition+ EndOfFile
 %Definition <- %Identifier LEFTARROW %Expression
@@ -265,4 +265,17 @@ This snippet defines how to parse algebraic expression using the normal preceden
     * name resolution, scoping
     * type checking, inference
     * match boson types to evaluation
-* 
+# TODO
+* replace PackratParser with CleanParser
+    * port tests
+    * rename Entrypoint to start? grammar?
+* rewrite REAMDE
+* jank around the definition of the fixedpoint and interactions between Argument and OneOrMore,etc.
+* visualizations
+    * generic ast nodes
+    * boxed text
+    * treewalk evaluator
+* type system
+* grammar registry
+* unify graph representations, take notes from graphlib
+

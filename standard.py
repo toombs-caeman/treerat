@@ -18,7 +18,11 @@ class Model[boson]:
 
     TODO
     * dynamic ordering like graphlib
+    * repl? probably not, use a different evaluator
     * densly connected subgraph algorithm?
+    * multiple dispatch in the context of name resolution?
+    * loops - inductive proofs of cycle correctness?
+    * types and casts
     """
     def __init__(self):
         # track nodes internally by their hash (int)

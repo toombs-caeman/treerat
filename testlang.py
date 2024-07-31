@@ -1,7 +1,7 @@
 import parser
 
 grammar = """
-%Entrypoint <- EOL (%Statement)* !.
+%start <- EOL (%Statement)* !.
 Statement   <- %Print / %Assign / %Expr EOL
 %Assign     <- %Var EQUAL %Expr EOL
 %Print      <- PRINT %Expr EOL
@@ -29,7 +29,7 @@ SLASH   <- '/' SPACE
 SPACE   <- ' '*
 EOL     <- [; \\n]*
 """
-parser = parser.BuildParser(**parser.squaredCircle(parser.fixedpoint.parse(grammar)))
+parser = parser.Parser(grammar)
 
 sample = """
 x = 1 + 2
@@ -37,6 +37,6 @@ print x + 1
     print { x = 4; x;}
 x = x + 2
 x * 3.14"""
-sample_ast = parser.parse(sample)
+sample_ast = parser(sample)
 if sample_ast is None:
     print('parse of testlang failed')

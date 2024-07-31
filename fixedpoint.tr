@@ -1,4 +1,4 @@
-%Entrypoint <- Spacing %Definition+ EOF
+%start <- Spacing %Definition+ EOF
 %Definition <-  %(Label/Node) LEFTARROW %ParseExpr
 ParseExpr  <- %Choice / %Sequence / (%Lookahead / %NotLookahead / %Argument) / (%ZeroOrOne / %ZeroOrMore / %OneOrMore) / %Primary
 

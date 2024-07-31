@@ -6,6 +6,11 @@ import graphviz
 from itertools import count
 from collections import defaultdict
 
+import graph
+import standard
+import parser
+import evaluator
+
 class Digraph(graphviz.Digraph):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -33,22 +38,61 @@ class Digraph(graphviz.Digraph):
         for f in files:
             f.close()
 
-import graph
-def comp_viz(model:'standard.Model', name='comp'):
-    vis = Digraph(name, strict=True)
+
+
+def vis(data:parser.node|graph.graph|standard.Model|None, *args) -> Digraph:
+    """Dispatch visualizations based on type of data to visualize."""
+    match data:
+        case parser.node():
+            return vis_ast(data, *args)
+        case standard.Model():
+            return vis_model(data, *args)
+        case None:
+            print(f"a call to vis received None: {args!r}")
+        case _:
+            print(f"don't know how to visualize {type(data)}: {args!r}")
+    return Digraph()
+
+def vis_ast(ast:parser.node, source:str|None=None):
+    dg = Digraph()
+    id = map(str, count())
+    def walk(ast, i):
+        match ast:
+            case parser.node():
+                dg.node(i, label=ast.kind)
+                for ia,(a, I) in enumerate(zip(ast, id)):
+                    walk(a, I)
+                    dg.edge(i, I, label=str(ia))
+            case tuple():
+                dg.node(i, label='()')
+                for ia,(a, I) in enumerate(zip(ast, id)):
+                    walk(a, I)
+                    dg.edge(i, I, label=str(ia))
+            case _:
+                dg.node(i, label=repr(ast))
+    walk(ast, next(id))
+    if source:
+        i = next(id)
+        l:str = source.replace('\n', '\\l')
+        if not l.endswith('\\l'):
+            l += '\\l'
+        dg.node(i, shape='box', label=l, labelloc='t')
+    return dg
+
+def vis_model(model:standard.Model, name='comp'):
+    dg = Digraph(name, strict=True)
     # make all nodes with labels
     for h,b in model._bosons.items():
         op, *args = b
-        vis.node(str(h), label=f"{op}({', '.join(map(repr, args))})" if all(isinstance(a, str) for a in args) else op)
+        dg.node(str(h), label=f"{op}({', '.join(map(repr, args))})" if all(isinstance(a, str) for a in args) else op)
     # map comp to predecessors
     G = graph.map(model._graph, str)
     rG = defaultdict(set)
     # make all edges
     for h, tails in G.items():
         for t in tails:
-            vis.edge(t, h)
+            dg.edge(t, h)
             rG[t].add(h)
-
     try:
         order = [str(hash(n)) for n in model.order]
     except graph.CycleError as ce:
@@ -62,10 +106,10 @@ def comp_viz(model:'standard.Model', name='comp'):
                 err.edge(t, h)
         err.render(outfile='error.png', format='png', cleanup=True)
 
-        vis.next_step()
+        dg.next_step()
         for n in G:
-            vis.node(n, color='red')
-        return vis
+            dg.node(n, color='red')
+        return dg
 
     # highlight the order of execution
     WAIT  = 'black' # computation is not ready, black is the default color
@@ -75,113 +119,65 @@ def comp_viz(model:'standard.Model', name='comp'):
     for n in order:
         # mark current node as active
         for t in G[n]:
-            vis.edge(t, n, color=ACTIVE)
-        vis.node(n, color=ACTIVE)
+            dg.edge(t, n, color=ACTIVE)
+        dg.node(n, color=ACTIVE)
         # transition to the next step
-        vis.next_step()
+        dg.next_step()
         # mark the old node as done
         for h in rG[n]:
-            vis.edge(n, h, color=READY)
+            dg.edge(n, h, color=READY)
         for t in G[n]:
-            vis.edge(t, n, color=DONE)
-        vis.node(n, color=DONE)
-    return vis
+            dg.edge(t, n, color=DONE)
+        dg.node(n, color=DONE)
+    return dg
 
-
-def ast_viz(ast, source:str|None=None):
-    id = map(str, count())
-    vis = Digraph()
-    def walk(node):
-        i = next(id)
-        match node:
-            case str():
-                vis.node(i, label=repr(node))
-            case list():
-                t, *args = node
-                vis.node(i, label=t)
-                for ai, a in enumerate(args):
-                    vis.edge(i, walk(a), label=str(ai))
-        return i
-    main = walk(ast)
-    if source:
-        i = next(id)
-        l:str = source.replace('\n', '\\l')
-        if not l.endswith('\\l'):
-            l += '\\l'
-        vis.node(i, shape='box', label=l, labelloc='t')
-        vis.edge(i, main, label='parse')
-
-    return vis
-
-class namespace:
-    def __init__(self, nro:list[dict]|None=None):
-        self.__nro = nro or [{}]
-
-    def __getitem__(self, key):
-        return self.__get(key, slice(None))
-
-    @property
-    def global_(self):
-        return self.__nro[0]
-
-    def __get(self, key, sl:slice):
-        for ns in reversed(self.__nro[sl]):
-            if key in ns:
-                return ns[key]
-        raise NameError(key)
-
-    def __setitem__(self, key, value):
-        self.__nro[-1][key] = value
-
-    def __enter__(self):
-        self.__nro.append({})
-        return self
-
-    def __exit__(self, *_):
-        return self.__nro.pop()
 
 if __name__=="__main__":
     import testlang
     
     ast = testlang.sample_ast
-    ast_viz(ast, testlang.sample).render(outfile='ast.png', cleanup=True, format='png')
+    vis(ast, testlang.sample).render(outfile='ast.png', cleanup=True, format='png')
 
     # name resolution / computation graph generation
-    names = namespace() # comp hashes, keyed by a name which currently refer to them
-    import standard
+    names = evaluator.namespace() # comp hashes, keyed by a name which currently refer to them
     model = standard.Model()
     total_orders = {}
-    def x(expr):
-        match expr:
-            case ['Entrypoint', *stmts]:
-                for stmt in stmts:
+    def x(n:parser.node):
+        if not isinstance(n, parser.node):
+            return n
+        match n.kind:
+            case 'start':
+                for stmt in n:
                     x(stmt)
             # 'statements' don't need to return anything
-            case ['Assign', ['Var', name], val]:
+            case 'Assign':
+                name = n[0][0]
+                val = n[1]
                 # notice that this step fully eliminates names from the output
                 names[name] = x(val)
             # 'expressions' return their computation
-            case ['Scope', *stmts]:
+            case 'Scope':
                 v = None
                 with names:
-                    for stmt in stmts:
+                    for stmt in n:
                         v = x(stmt)
                 return v
-            case ['Var', name]:
-                return names[name]
-            case ['Print', expr]:
+            case 'Var':
+                return names[n[0]]
+            case 'Print':
                 last_print = total_orders.get('Print', None)
-                expr = x(expr)
+                expr = x(n[0])
                 comp = ('Print', expr)
                 dep = (expr,) if last_print is None else (comp[1], last_print)
                 comp = model.node(comp, *dep)
                 total_orders['Print'] = comp
                 model.add_target(comp)
 
-            case [op, *args]:
-                comp = [op]
+            case _:
+                print(n.kind, n.children)
+                comp:list[int|str] = [n.kind]
                 deps = []
-                for a in args:
+                for a in n:
                     if isinstance(a, str):
                         comp.append(a)
                     else:
@@ -189,8 +185,6 @@ if __name__=="__main__":
                         comp.append(a)
                         deps.append(a)
                 return model.node(tuple(comp), *deps)
-            case str():
-                return expr
     x(ast)
     
-    comp_viz(model).gif('compute.gif')
+    vis(model).gif('compute.gif')

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 import unittest
-from parser import *
+from ast_ import fixedpoint, Parser, node, ast2labels
 
 
 class Run(unittest.TestCase):
@@ -11,31 +11,30 @@ class Run(unittest.TestCase):
 
         This is essential, as it proves the initial premise of the language, that it can fully describe (and therefore fully modify) its own grammar.
         """
-        parse = fixedpoint.parse
+        P = Parser()
         with open('fixedpoint.tr', 'r') as f:
             lines = f.readlines()
 
         simple = 'a <- ( b cd)'
-        tree = parse(simple)
+        tree = P(simple)
         self.assertEqual(
-                ['Entrypoint',
-                ['Definition', ['Label', 'a'], ['Sequence', ['Label', 'b'], ['Label', 'cd']]]],
+                node('start', (node('Definition', node('Label', 'a'), node('Sequence', node('Label', 'b'), node('Label', 'cd'))),)),
                 tree,
                 msg=f'simple test case failed: {simple!r}'
         )
 
         # double check that the first line of the fixed point parses as expected
-        tree = parse(lines[0]) # lines[0]
-        #pp(tree)
+        tree = P(lines[0]) # lines[0]
         self.assertEqual(
-                ['Entrypoint',
-                 ['Definition',
-                  ['Node', ['Label', 'Entrypoint']],
-                  ['Sequence',
-                   ['Label', 'Spacing'],
-                   ['Argument', ['OneOrMore', ['Label', 'Definition']]],
-                   ['Label', 'EOF']
-                ]]],
+                node('start', (
+                    node(
+                        'Definition',
+                        node('Node', node('Label', 'start')),
+                        node(
+                            'Sequence',
+                            node('Label', 'Spacing'),
+                            node('Argument', node('OneOrMore', node('Label', 'Definition'))),
+                            node('Label', 'EOF'))),)),
                 tree,
                 msg=f'could not parse line {lines[0]!r}'
         )
@@ -45,19 +44,19 @@ class Run(unittest.TestCase):
             # blank lines and comments shouldn't parse by themselves, so ignore them
             if line == '\n' or line.startswith('#'):
                 continue
-            tree = parse(line)
+            tree = P(line)
             self.assertIsNotNone(tree, msg=f'could not parse line {line!r}')
-            new_labels = squaredCircle(tree)
+            new_labels = ast2labels(tree)
             for k,v in new_labels.items():
-                self.assertEqual(labels[k], v, msg=f'label {k!r} deviates from fixed point.')
+                self.assertEqual(fixedpoint[k], v, msg=f'label {k!r} deviates from fixed point.')
 
         # check the full circle
-        tree = parse(''.join(lines))
+        tree = P(''.join(lines))
         #pp(tree)
         self.assertIsNotNone(tree, msg=f'could parse individual lines, but not consecutive ones?')
         self.assertEqual(
-                labels,
-                squaredCircle(tree),
+                fixedpoint,
+                ast2labels(tree),
                 msg="fixed point not fixed, circle != square"
         )
 
@@ -70,26 +69,24 @@ class Run(unittest.TestCase):
         """
         # given a spec and valid parse tree, format the tree back into a string
         test_ok = {
-                'a':BuildParser([T.Argument, [T.Dot]]),
+                'a':Parser(start=node('Argument', node('Dot'))),
         }
-        for code, parser in test_ok.items():
-            tree = parser.parse(code)
+        for code, P in test_ok.items():
+            tree = P(code)
             self.assertIsNotNone(tree, msg="precondition failed: input not parsed")
-            self.assertEqual(code, parser.fmt(tree), msg="parse•fmt does not form fixed point")
+            self.assertEqual(code, P.fmt(tree), msg="parse•fmt does not form fixed point")
 
         test_fail = {
-                BuildParser([T.Argument, [T.Dot]]): None
+                Parser(start=node('Argument', node('Dot'))): None,
         }
-        for parser, tree in test_fail.items():
-            self.assertIsNone(parser.fmt(tree), msg="Non-conforming input should be rejected")
+        for P, tree in test_fail.items():
+            self.assertIsNone(P.fmt(tree), msg="Non-conforming input should be rejected")
 
 
     def testBuildMath(self):
         """Try building a parser in the initial language that recognizes math expressions with proper precedence."""
-        def build(code, base_parser=fixedpoint):
-            return BuildParser(**squaredCircle(base_parser.parse(code)))
         math_lang = """
-        %Entrypoint <- %Expr !.
+        %start <- %Expr !.
         Expr    <- (%Add / %Sub) / (%Mul / %Div) / '(' %Expr ')' / %Value
         %Add     <- %Expr:1 '+' %Expr
         %Sub     <- %Expr:1 '-' %Expr
@@ -97,23 +94,22 @@ class Run(unittest.TestCase):
         %Div     <- %Expr:2 ('/' %Expr:1)+
         %Value   <- %[0-9]+
         """
-        mp = build(math_lang)
+        P = Parser(math_lang)
 
         tests = {
-            '6*7+3':['Entrypoint', ['Add', ['Mul', ['Value', '6'], ['Value', '7']], ['Value', '3']]],
-            '1+2+3':['Entrypoint', ['Add', ['Value', '1'], ['Add', ['Value', '2'], ['Value', '3']]]],
+            '6*7+3':node('start', node('Add', node('Mul', node('Value', '6'), node('Value', '7')), node('Value', '3'))),
+            '1+2+3':node('start', node('Add', node('Value', '1'), node('Add', node('Value', '2'), node('Value', '3')))),
         }
         for input, expected in tests.items():
-            actual = mp.parse(input)
+            actual = P(input)
             self.assertIsNotNone(actual, msg=f'could not parse input {input!r}')
             self.assertEqual(expected, actual, msg=f'incorrect parsing for input {input!r}')
 
-
-    def testConformance(self):
-        """Show that the parser conforms to the interface in T (the 'spec' spec)."""
-        p = PackratParser
-        for t in T:
-            self.assertTrue(t.name in dir(p), msg=f'{p.__name__} does not implement {t.name}')
+    def testErrorReport(self):
+        P = Parser()
+        self.assertIsNone(P('bogus <- 123'), msg=f'should not have been able to parse malformed string')
+        self.assertIsNotNone(P.error, msg='failing to parse should have generated an error message')
+        # TODO
 
 
 if __name__ == "__main__":
