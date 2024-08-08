@@ -1,17 +1,17 @@
 #!/usr/bin/env python
 import unittest
-from ast_ import fixedpoint, Parser, node, ast2labels
+from parser import fixedpoint, PackratParser, node, ast2labels
 
 
-class Run(unittest.TestCase):
+class TestParser(unittest.TestCase):
 
     def testFixedPoint(self):
         """
         Show that the manually initialized fixed point parser parses fixedpoint.tr into a parser exactly the same as the manually written one.
 
-        This is essential, as it proves the initial premise of the language, that it can fully describe (and therefore fully modify) its own grammar.
+        This is essential, as it proves the initial premise of the parser, that it can fully describe (and therefore fully replace) its own grammar.
         """
-        P = Parser()
+        P = PackratParser()
         with open('fixedpoint.tr', 'r') as f:
             lines = f.readlines()
 
@@ -69,7 +69,7 @@ class Run(unittest.TestCase):
         """
         # given a spec and valid parse tree, format the tree back into a string
         test_ok = {
-                'a':Parser(start=node('Argument', node('Dot'))),
+                'a':PackratParser(start=node('Argument', node('Dot'))),
         }
         for code, P in test_ok.items():
             tree = P(code)
@@ -77,7 +77,7 @@ class Run(unittest.TestCase):
             self.assertEqual(code, P.fmt(tree), msg="parse•fmt does not form fixed point")
 
         test_fail = {
-                Parser(start=node('Argument', node('Dot'))): None,
+                PackratParser(start=node('Argument', node('Dot'))): None,
         }
         for P, tree in test_fail.items():
             self.assertIsNone(P.fmt(tree), msg="Non-conforming input should be rejected")
@@ -94,7 +94,7 @@ class Run(unittest.TestCase):
         %Div     <- %Expr:2 ('/' %Expr:1)+
         %Value   <- %[0-9]+
         """
-        P = Parser(math_lang)
+        P = PackratParser(math_lang)
 
         tests = {
             '6*7+3':node('start', node('Add', node('Mul', node('Value', '6'), node('Value', '7')), node('Value', '3'))),
@@ -106,7 +106,7 @@ class Run(unittest.TestCase):
             self.assertEqual(expected, actual, msg=f'incorrect parsing for input {input!r}')
 
     def testErrorReport(self):
-        P = Parser()
+        P = PackratParser()
         self.assertIsNone(P('bogus <- 123'), msg=f'should not have been able to parse malformed string')
         self.assertIsNotNone(P.error, msg='failing to parse should have generated an error message')
         # TODO

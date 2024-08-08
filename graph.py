@@ -1,134 +1,123 @@
-"""
-Helper functions for working with directed graph structures.
+from base import *
+import networkx as nx
 
-basically graphlib, but I want to be able to "finalize" nodes to say
-that they are ready to proceed even if the graph as a whole can still receive new nodes
-
-Rather than disallowing changes to the graph after G.prepare(),
-disallow adding predecessors to nodes after G.finalize(node)
-"""
-__all__ = ['graph', 'sort', 'map', 'CycleError']
-from collections import defaultdict
-from graphlib import CycleError
-
-type graph[T] = dict[T,set[T]]
-
-from typing import Callable
-def map[A,B](G:graph[A], f:Callable[[A],B]) -> graph[B]:
-    return {f(k):{f(n) for n in v} for k,v in G.items()}
+from dataclasses import dataclass
 
 
-def sort[N](G:graph[N], key = ...) -> tuple[N]:
+class Graph(Evaluator):
     """
-    Returns a topological sorting of nodes or raises CycleError.
+    a base graph optimizer and evaluator
 
-    If a key is given, then sort by key whenever multiple nodes are ready.
+    subclasses should define compile(ast) -> nx.Digraph
+    Where each node is a function and each edge represents a dependency.
+    Each function will be called a set of incoming edges and a set of outgoing edges.
+    outgoing edges must be marked 'ok' if the computation should proceed in that direction.
+
+    Nodes are eligible to run if they have no incoming edges, or if all incoming edges are 'ok'
+
+    The order of node execution depends only on the edges.
+    compile() may call optimize(G) to make use of general graph-level optimizations.
     """
-    G = defaultdict(set, G)
-    # make sure that all nodes are accounted for in the keys of G
-    # even those that don't have dependencies
-    pending = set()
-    for v in G.values():
-        pending.union(v)
-    for n in pending - G.keys():
-        G[n] = set()
-    out = [] # return value
-    if key is ...:
-        # ready nodes are pending nodes with no dependencies
-        # we can process ready nodes in batches since we haven't specified an order
-        while (ready:={n for n,p in G.items() if not p}):
-            for n in ready:
-                out.append(n)
-                del G[n]
-            for v in G.values():
-                v -= ready
-    else: # sort ready nodes by priority
-        heap = [n for n,p in G.items() if not p]
-        for n in heap:
-            del G[n]
-        heapify(heap, key=key)
-        #print(len(G), 'keys', list(G))
-        while heap:
-            #print(len(heap), 'heap', heap)
-            n = heappop(heap)
-            out.append(n)
-            ready = []
-            for k,v in G.items():
-                if n in v:
-                    v.remove(n)
-                if not v:
-                    ready.append(k)
-            for k in ready:
-                del G[k]
-                heappush(heap, k, key=key)
-    if G:
-        raise CycleError(G)
-    return tuple(out)
+    def __init__(self, ast:node|None=None):
+        self.graph = None if ast is None else self.compile(ast)
 
-# These bits are mostly copied from heapq, but heapq doesn't properly expose sorting by key (probably for efficiency)
+    def __call__(self, ast:node|None=None, vis:Visualizer|None=None):
+        if ast is None:
+            if self.graph is None:
+                raise ValueError("don't have any code to run")
+            G = self.graph.copy()
+        else:
+            G = self.compile(ast)
 
-def heapify(x, key=...):
-    """Transform list into a heap, in-place, in O(len(x)) time."""
-    n = len(x)
-    # Transform bottom-up.  The largest index there's any point to looking at
-    # is the largest with a child index in-range, so must have 2*i + 1 < n,
-    # or i < (n-1)/2.  If n is even = 2*j, this is (2*j-1)/2 = j-1/2 so
-    # j-1 is the largest, which is n//2 - 1.  If n is odd = 2*j+1, this is
-    # (2*j+1-1)/2 = j so j-1 is the largest, and that's again n//2-1.
-    for i in reversed(range(n//2)):
-        _siftup(x, i, key=key)
+        return self.run(G, vis)
 
-def heappop(heap, key=...):
-    """Pop the smallest item off the heap, maintaining the heap invariant."""
-    lastelt = heap.pop()    # raises appropriate IndexError if heap is empty
-    if heap:
-        returnitem = heap[0]
-        heap[0] = lastelt
-        _siftup(heap, 0, key=key)
-        return returnitem
-    return lastelt
+    #@abc.abstractmethod
+    def compile(self, ast:node) -> nx.DiGraph:
+        """compile ast into a graph."""
+        # TODO convert ast to graph here
+        #   make sure to call self.optimize for optimization
+        raise NotImplemented
 
-def heappush(heap, item, key=...):
-    """Push item onto heap, maintaining the heap invariant."""
-    heap.append(item)
-    _siftdown(heap, 0, len(heap)-1, key=key)
+    def optimize(self, G:nx.DiGraph):
+        """Do graph level optimization."""
+        # cull the graph to the subset needed to compute targets
+        needed = set()
+        for n in G.nodes(target=True):
+            needed |= n.ancestors()
+        G = nx.induced_subgraph(G, needed)
+        if not nx.is_directed_acyclic_graph(G):
+            raise CompileError('cycle detected in computation graph.')
+        return G
 
-def _siftup(heap, pos, key):
-    if key is ...:
-        key = lambda x:x
-    endpos = len(heap)
-    startpos = pos
-    newitem = heap[pos]
-    # Bubble up the smaller child until hitting a leaf.
-    childpos = 2*pos + 1    # leftmost child position
-    while childpos < endpos:
-        # Set childpos to index of smaller child.
-        rightpos = childpos + 1
-        if rightpos < endpos and not key(heap[childpos]) < key(heap[rightpos]):
-            childpos = rightpos
-        # Move the smaller child up.
-        heap[pos] = heap[childpos]
-        pos = childpos
-        childpos = 2*pos + 1
-    # The leaf at pos is empty now.  Put newitem there, and bubble it up
-    # to its final resting place (by sifting its parents down).
-    heap[pos] = newitem
-    _siftdown(heap, startpos, pos, key=key)
+    def clear(self):
+        """clear and reset computation graph."""
+
+    def run(self, G:nx.DiGraph, vis:Visualizer|None=None):
+        """execute the computation graph."""
+        G = G.copy()
+        for n in nx.topological_sort(G):
+            if vis:
+                for e in G.in_edges(n):
+                    G.edges[e]['color'] = vis.active
+                G.nodes[n]['color'] = vis.active
+                vis.add_frame(G)
+                for e in G.in_edges(n):
+                    G.edges[e]['color'] = vis.done
+                G.nodes[n]['color'] = vis.done
+                for t in G[n]:
+                    G[n][t]['color'] = vis.ready
+        if vis:
+            vis.add_frame(G)
 
 
-def _siftdown(heap, startpos, pos, key):
-    if key is ...:
-        key = lambda x:x
-    newitem = heap[pos]
-    # Follow the path to the root, moving parents down until finding a place
-    # newitem fits.
-    while pos > startpos:
-        parentpos = (pos - 1) >> 1
-        parent = heap[parentpos]
-        if key(newitem) < key(parent):
-            heap[pos] = parent
-            pos = parentpos
-            continue
-        break
-    heap[pos] = newitem
+empty = object()
+
+@dataclass
+class Fermion:
+    kind:str
+    value:object=empty
+    position:bool|None=None
+    def unwrap(self):
+        if self.position is None:
+            raise EvalError(f"Tried to unwrap value that hasn't yet been determined")
+        if not self.position:
+            raise EvalError(f"Tried to unwrap value that wasn't produced.")
+        return self.value
+
+    def ok(self, value=empty):
+        if self.position is not None:
+            raise EvalError(f"Tried to set fermion value twice.")
+        self.position = True
+        self.value = value
+
+    def nok(self):
+        if self.position is not None:
+            raise EvalError(f"Tried to set fermion value twice.")
+        self.position = False
+
+class Boson:
+    """
+    For convenience to wrap calls to normal python functions.
+    Also as an example of how to handle effects
+    """
+    def __init__(self, func):
+        self.func = func
+    def __call__(self, incoming:tuple[Fermion,...], outgoing:tuple[Fermion, ...]):
+        # TODO how to make sure these are in the right order?
+        args = tuple(a.unwrap() for a in incoming)
+        try:
+            value = self.func(*args)
+            for f in outgoing:
+                if f.kind == 'value':
+                    f.ok(value)
+        except Exception as e:
+            for f in outgoing:
+                if f.kind == 'throw':
+                    f.ok(e)
+        for f in outgoing:
+            if f.position is None:
+                f.nok()
+
+
+
 

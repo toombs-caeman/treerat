@@ -14,6 +14,12 @@ Arguably though, they are a special form of Sequence and Choice over Char
 9.5-11: separate string from character class
 11.5-13.5: separate string from character class, testBuildMath
 
+# 8-03
+put in a lot of time recently.
+
+# 8-07
+17.5-22: move parser.py trim into base function calls in order to prep translation to javascript
+
 
 # todo
 * optim: make sure that trim isn't doing extraneous work

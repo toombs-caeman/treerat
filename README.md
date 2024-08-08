@@ -1,126 +1,146 @@
 # treerat
 
-This is a language for rapidly prototyping domain specific languages (DSLs) hosted within a general purpose language (GPL).
+This is my exploration of [programming language design](https://toombs-caeman.github.io/pl).
 
-It works by exposing a self-modifying parser and interpreter that can call or define methods in the host language while allowing total syntactic freedom. The heavy lifting of semantics can be handled by the host.
+The goal of the project is just to explore ideas as they occur to me and not necessarily develop a viable language.
+However, I intend to eventually build enough components that this becomes a useful toolkit for exploring novel languages.
 
-The initial language is intentionally simple, only able to modify itself.
+In this initial stage, I am focusing on high-level theory, readability, and visualizations rather than efficiency.
+Eventually I will implement, as an example, the same language in python and rust/c99 with the goal of a self hosting language.
+The python implementations will continue to focus on readability while the lower-level will focus on efficiency.
 
-It works by starting with a minimum viable language (MVL) that can only modify its own parser and interpreter or define new functions in a host language.
+# Language Components
+The following language components can be considered higher order functions that are generic over the precise language being implemented.
+My goal here is to implement the components such that they can be easily extended to implement any target language.
 
-* [original inspo](https://blog.bruce-hill.com/packrat-parsing-from-scratch)
-# current status
-version 0.1 initial implementation phase
+Only a few of these have actually been completed.
 
-Error handling & reporting needs to be better. The parser to interpreter loop needs to be tightened up.
+* parser (source code -> ast)
+    * a tokenizer is a vastly simplified form that parses source into a flat list of strings (tokens)
+* tree IR
+    * compiler (tree -> tree) (can be noop)
+    * static analysis (tree -> status) (can be noop)
+        * do all node kinds have implementations?
+        * do all nodes match number of arguments to implementation arity?
+        * type checks, do all the node arguments have an expected type?
+    * optimizer (tree -> tree) (can be noop)
+        * type inference, do we need to insert casts?
+        * can we statically evaluate some branches?
+    * evaluators (tree -> action)
+* bytecode IR
+    * compiler (ast -> bytecode)
+    * static analysis (bytecode -> status) (can be noop)
+        * do all bytecodes have implementations?
+        * are all const references valid?
+    * optimizer (bytecode -> bytecode) (can be noop)
+        * can we statically evaluate some operations?
+    * evaluator (bytecode -> action)
+* graph IR
+    * compiler (ast -> graph)
+    * static analysis (graph -> status) (can be noop)
+        * do all bosons have implementations?
+        * are there cycles?
+    * optimizer (graph -> graph) (can be noop)
+        * can we transpile hot paths?
+        * can we autothread?
+        * can we statically evaluate some bosons?
+    * transpiler (graph -> bytecode)
+    * evaluator (graph -> action)
+* loader
+    * how do we get data into the toolchain?
+        * loading source files
+        * loading intermedite artifacts (IR). What is the on-disk representation?
+        * fetch libraries from urls? expect them at a hardcoded file location?
+
+* [compiler drivers](https://fabiensanglard.net/dc/index.php) - the user interface for a language
+    * bind together a specific grammar, parser, analyzer, optimizer, loader and evaluator into a complete language toolchain
+    * REPL?
 
 
-# the initial language
-The parser is a packrat parser with a modifiable internal representation of the current grammar and the remaining input.
+# Visualization
+Pygraphviz is used to visualize tree and graph structures.
+Computation can be visualized through a small extension to render animated gifs.
+The basic evaluators are instrumented to automatically generate these visualizations as they run.
 
-# MVL design considerations
-* The implementation should be small and straightforward above all else. I want the MVL to be as easy to understand and to hack as possible.
-* don't use fancy language features to implement the MVL. It should be a nearly one to one translation to any another host language.
-* the abstract syntax tree (AST) emitted by the MVL parser is a list of lists and strings. Every list is a node, and the first item of every list is a string that indicates that node's type. It is up to the interpreter to resolve those names. This is probably not very performant, but it simplifies booting up the parser.
-* performance doesn't matter much. "Worse" code which is easier to read is prefered.
+Visualization tools are in `viz.py`
 
-# MVL internals
-The abstract syntax tree (AST) emitted by the MVL's packrack parser is a list of lists and strings. Every list is a node, and the first item of every list is a string that indicates that node's type. It is up to the interpreter to resolve those names.
+TODO:
+* figure out how to text animations in combination with graphviz (render to html?)
+* I'd love to be able to have source, ast (graphviz), bytecode, vm state (stack + registers) all side by side,
+    with an animation to step through execution and highlights linking the active segment of each representation.
+    * render this as an html fragment that I can include in my blog
+    * use javascript to allow controls: run, pause, reverse, step
+    * with a wasm backend for the language components, you could actually just develop a new language server-side in the browser
+    * [viz.js](https://github.com/mdaines/viz-js)
 
-The MVL's interpreter resolves the top level node's name in a flat namespace of functions, then evaluates that function with the other items in that node as arguments. The top level node is usually "Main", which evaluates a list of statements in order by resolving the node name and evaluating the resulting function in the same way.
+# Parser
 
-MVL boots by evaluating a pre-parsed AST that loads the initial grammar into the parser and then tries to parse new input.
+`parser.py` contains a generic packrat parser.
 
-The grammar modification syntax is based on [parsing expression grammars](https://en.wikipedia.org/wiki/Parsing_expression_grammar) but with extensions in order to specify which elements are purely syntactic and which should be present in the resulting parse tree.
+It can initialize its grammar from an abstract syntax tree (AST) or text, but uses a "fixedpoint" grammar by default.
+If a language specification is given as a string, it will be parsed according to the fixedpoint grammar
+and the resuting AST will be used to initialize the parser as normal.
 
-The foreign function syntax allows functions to be written in the host language and added to the internal namespace.
+The fixedpoint is named as such because parsing the fixedpoint grammar with a fixedpoint parser
+produces a syntax tree which can directly initialize an identical parser.
 
-## initial interpreter data
-Some core data must be pre-loaded into the parser and interpreter for them to function.
-The parser needs an initial grammar, and the interpreter needs an implementation of that grammar and a reference to the parser.
+The fixedpoint language itself is a small extension of the Parsing Expression Grammar (PEG).
 
-initial interpreter functions
-* boot - loads input, calls main while there are no errors
-* main - runs the parser, evaluates the parse tree.
-* ffi - load host function into interpreter namespace
-* clear - empty the grammar
-* update - update the grammar
-* swap - return control to the parser. Updates to the grammar do not apply until the swap.
-* parse - a reference to the parser
+[read more](parser.md)
 
-derivative functions
-* eval - define function in host, then load through ffi
-* pause - save the current state of the interpreter such that it can be restarted. (execution will restart at boot function)
+# Name resolution
+TODO
+* IR agnostic name resolution for lexical scoping?
+* crafting interpreters page 173 for an example of pathological scope. make sure the reference implementations get it right
+    * closures too
 
-# Fixed Point Grammar
-modified from the [original paper](https://bford.info/pub/lang/peg.pdf)
-```
-%main <- Spacing %Definition+ EndOfFile
-%Definition <- %Identifier LEFTARROW %Expression
-Expression <- Choice /
-    Sequence /
-    (ZeroOrOne / ZeroOrMore / OneOrMore) /
-    (Lookahead / NotLookahead / Argument) /
-    Identifier !LEFTARROW /
-    OPEN Expression CLOSE /
-    Literal /
-    Class /
-    DOT
-%Choice   <- Expression:1 (SLASH Expression:1)+
-%Sequence <- Expression:2 Expression:2+
-%ZeroOrOne  <- Expression:3 IBANG
-%ZeroOrMore <- Expression:3 STAR
-%OneOrMore  <- Expression:3 PLUS
-%Lookahead    <- AMP  Expression:4
-%NotLookahead <- BANG Expression:4
-%Argument     <- CENT Expression:4
-%Identifier <- %[a-zA-Z_] %[a-zA-Z_0-9]* Spacing
-%Literal <- ['] (!['] Char)* ['] Spacing / ["] (!["] Char)* ["] Spacing
-%Class <- '[' %(!']' (Range/Char))* ']' Spacing
-%Range <- %Char '-' %Char
-Char <- %('\\' [nrt'"\[\]\\]
-    / '\\' [0-2][0-7][0-7]
-    / '\\' [0-7][0-7]?
-    / !'\\' .)
-LEFTARROW <- '<-' Spacing
-SLASH     <- '/' Spacing
-CENT      <- '%' Spacing
-AMP       <- '&' Spacing
-BANG      <- '!' Spacing
-IBANG     <- '?' Spacing
-STAR      <- '*' Spacing
-PLUS      <- '+' Spacing
-OPEN      <- '(' Spacing
-CLOSE     <- ')' Spacing
-%DOT      <- '.' Spacing
-Spacing   <- (Space / Comment)*
-Comment   <- '#' (!EndOfLine .)* EndOfLine
-Space     <- ' ' / '\t' / EndOfLine
-EndOfLine <- '\r\n' / '\n' / '\r'
-EndOfFile <- !.
-```
+see also:
+* [wikipedia](https://en.wikipedia.org/wiki/Name_resolution_(programming_languages))
+
+# Type and Effect Systems
+TODO: IR agnostic type inference implementation.
+
+[read more](types.md)
+
+# Graph Intermediate Representation (GIR)
+Exploration of using a directed graph structure to model data dependency and flow through the program.
+My intuition is that graph algorithms offer a natural way to approach optimizing programs and introducing novel features
+such as implicit multithreading.
+
+In this model, "bosons" (nodes) are units of computation and "fermions" (edges) are "productions" or
+"temporal dependencies" which form relations between bosons.
+
+Before any evaluation, fermions exist in a superposition, being neither True or False.
+A boson may only begin evaluation if all of its incoming edges are True (or if it has none).
+This ensures that all dependencies are fulfilled and all incoming values exist.
+When a boson finishes evaluation, it marks each outgoing edge as True or False and potentially sets its value.
+
+Fermions are typed. They may represent a value (of a given type), a mutation, an exception,
+or anything else that would be considered a 'side effect' or 'external effect' in another context.
+They can also simply represent temporal ordering, rather than any native value of the language. Such constraints can
+be introduced by the language to enforce total ordering of effects when appropriate, eliminating race conditions.
+Boson evaluation is rendered pure by considering any possible side-effect as fermions.
+
+Since effects are represented as edges, we must have a special node "SINK" which consumes all uncaught effects.
+During manipulation of the graph this is considered a node to make the graph well formed.
+However, it doesn't have the same scheduling flexibility as a boson and must always evaluate effects in the exact order they are produced
+
+Correct programs must be acyclic.
+Loops are still possible to represent, but as a subgraph which is instantiated (reset) for each iteration.
+
+[see more](dag.md)
+
+# Evaluators
+An evaluator can be thought of as embodying the semantics of a language. In slightly more concrete terms, evaluators do
+the computations described by a given IR.
+
+Of course, the simplest evaluator is a tree-walk interpreter.
+
+I have yet to build any evaluator of the GIR.
 
 # grammar version
 as a hash of the grammar?
 as a hash of the host + grammar + primitives?
-
-# internal representation & intermediate representation
-* grammar - a name only representation of the current grammar rules
-* ast - output by the parser, valid json
-
-
-* grammar (in parser)
-* parse tree representation (must be shared by parser and interpreter)
-* name resolution (in interpreter) including parser and interpreter
-
-* markers - index into the input
-
-* match constructor phase
-    * parsedefinition -> matcher function
-* matching phase
-    * raw text + matcher function -> node + children + markers
-* trim phase - remove nodes not marked as arguments
-    * node + children + markers -> ast
 
 # why
 I was playing with packrat parsing one day and I thought it would be easy.
@@ -146,33 +166,7 @@ I have a bunch of ideas for 'micro' languages which would be greatly aided by th
   * [dasel](https://github.com/TomWright/dasel)
   * [gron](https://github.com/tomnomnom/gron) for grepping json
 
-# examples
 
-```
-Expr    ← Sum
-Sum     ← Product (('+' / '-') Product)*
-Product ← Power (('*' / '/') Power)*
-Power   ← Value ('^' Power)?
-Value   ← [0-9]+ / '(' Expr ')'
-```
-This snippet defines how to parse algebraic expression using the normal precedence rules.
-# roadmap
-* version 0.1
-    * python host: parser, ffi, peg, 
-* version 0.2
-    * python host: eval, purge
-* version 0.3
-    * javascript host
-* version 0.4
-    * language server protocol, syntax highlighting??
-* version 0.5
-    * c/c++ host
-* version 1.0
-    * standalone interpreters/semantics?
-
-# parse debugging
-* detect mutual left recursion as a value error for parsers
-* point out probable syntax errors when failing to parse
 
 # features to play with later
 * embed debug visualization types as an extension of debug symbols
@@ -221,13 +215,13 @@ This snippet defines how to parse algebraic expression using the normal preceden
 * rewrite it in rust
     * native types: null, int, float, complex, string, map, set, list, matrix
 
-# forth implementations
-* [jonesforth](https://github.com/nornagon/jonesforth/blob/master/jonesforth.S)
-* [lina forth](http://home.hccnet.nl/a.w.m.van.der.horst/lina.html)
-* [gforth](https://en.wikipedia.org/wiki/Gforth)
-* fig-Forth
-* F83
 # reference
+* forth implementations
+    * [jonesforth](https://github.com/nornagon/jonesforth/blob/master/jonesforth.S)
+    * [lina forth](http://home.hccnet.nl/a.w.m.van.der.horst/lina.html)
+    * [gforth](https://en.wikipedia.org/wiki/Gforth)
+    * fig-Forth
+    * F83
 * [programming language design](https://toombs-caeman.github.io/pl)
 * [scrapscript](https://scrapscript.org/)
     * content addressable code
@@ -258,24 +252,10 @@ This snippet defines how to parse algebraic expression using the normal preceden
 [regex101](https://regex101.com/)
 
 * [semantic versioning](https://semver.org/)
+* erlang/beam
+* [weathering the software winter](https://100r.co/site/weathering_software_winter.html) a discussion of why you might want to be fully in control of your software stack.
 
-# compilation
-* parser (source code -> ast)
-* graph generation (ast, (ast_t -> func) -> cg)
-    * name resolution, scoping
-    * type checking, inference
-    * match boson types to evaluation
 # TODO
-* replace PackratParser with CleanParser
-    * port tests
-    * rename Entrypoint to start? grammar?
-* rewrite REAMDE
 * jank around the definition of the fixedpoint and interactions between Argument and OneOrMore,etc.
-* visualizations
-    * generic ast nodes
-    * boxed text
-    * treewalk evaluator
 * type system
 * grammar registry
-* unify graph representations, take notes from graphlib
-

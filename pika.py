@@ -1,9 +1,10 @@
 from functools import cache, wraps
 
-from base import *
-
 # TODO error recovery marker in fixedpoint?
-__all__ = ['node', 'PackratParser', 'ParseError']
+__all__ = ['node', 'Parser', 'ParseError']
+
+class ParseError(Exception):
+    """raised if parser fails on input while in strict mode"""
 
 class T:
     """To mitigate typos, define all the strings used internally as identifiers"""
@@ -48,36 +49,27 @@ class T:
     charclass = 'CharClass'
     # default start symbol
     start = 'start'
+class node:
+    """generic tree node with some metadata"""
+    __slots__ = ['kind', 'start', 'stop', 'children']
+    def __init__(self, kind, *children, start:int=..., stop:int=...):
+        self.kind = kind
+        self.start = start
+        self.stop = stop
+        self.children = children
+    def __iter__(self):
+        return iter(self.children)
+    def __getitem__(self, __key):
+        return self.children[__key]
+    def __hash__(self):
+        return hash((self.kind, self.children))
+    def __eq__(self, __o):
+        return isinstance(__o, node) and self.kind == __o.kind and self.children == __o.children
+    def __repr__(self):
+        return f'{type(self).__name__}{(self.kind, *self.children)!r}'
 
 
-def normalize(__from=None, /, **labels:node):
-    # rectify the incoming specification for internal use, allowing strings, ast, parser, or dictionary
-    out:dict[str,node]
-    if __from is None and not labels:
-        out = fixedpoint.copy()
-    else:
-        match __from:
-            case str():
-                out = ast2labels(PackratParser()(__from, strict=True))
-            case node():
-                out = ast2labels(__from)
-            case PackratParser():
-                out = __from.labels
-                raise NotImplemented
-            case dict():
-                out = __from
-            case None:
-                out = {}
-            case _:
-                raise ValueError(__from)
-        out.update(labels)
-    return out
-
-class FormatError(Exception):
-    """Raised when the formatter cannot process"""
-
-
-class PackratParser(Parser):
+class Parser:
     """
     A generic packrat parser.
 
@@ -146,37 +138,25 @@ class PackratParser(Parser):
         provide partial parsings and extended error reporting
     """
     def __init__(self, __from=None, /, **labels:node):
-        # normalize the incoming specification for internal use
-        self.labels = normalize(__from, **labels)
-
-        # TODO detect mutual left recursion
-        #   for each rule, check terms sequentially to determine if that rule can match an empty string.
-        #   if the rule cannot match an empty string, discard it.
-        #   if the rule recurses to a previous rule, it is mutually left recursive
-        mlr = set()
-        def lcurse(n:node, seen:list):
-            """return a list of mutually recursive kinds, or none"""
-            nonlocal mlr
-            match n.kind:
-                case T.string|T.index:
-                    return
-                case T.label:
-                    if (idx:=seen.index(n.kind)) != -1:
-                        return seen[idx:]
-                    seen.append(n[0])
-                    return lcurse(self.labels[n[0]], seen)
-                case T.node:
-                    return lcurse(n[1], seen)
-                case T.zeroormore|T.zeroorone:
-                    pass
+        # rectify the incoming specification for internal use
+        if __from is None and not labels:
+            labels = fixedpoint.copy()
+        else:
+            match __from:
+                case str():
+                    __from = ast2labels(Parser()(__from))
+                case dict():
+                    __from = __from
+                case node():
+                    __from = ast2labels(__from)
                 case _:
-                    return lcurse(n[0], seen)
-
+                    __from = {}
+            __from.update(labels)
+            labels = __from
 
         # resolve labels into cache-friendly function applications
         self.__cache_clears = []
-        index = {}  # new labels to node
-        refs = set() # set of kinds refered to by labels
+        index = {}
 
         @cache
         def resolve(kind, *args):
@@ -185,7 +165,7 @@ class PackratParser(Parser):
                 name = args[0].name
                 offset = args[1]
                 newname = f'{name}:{offset}'
-                index[newname] = node(self.labels[name].kind, *self.labels[name][int(offset):])
+                index[newname] = node(labels[name].kind, *labels[name][int(offset):])
                 # turn index into plain label
                 kind = T.label
                 args = (newname,)
@@ -202,26 +182,20 @@ class PackratParser(Parser):
             if kind == T.label:
                 # make sure this is accessible later if there's an index into this label
                 call.name = args[0]
-                # collect a set of all labels referenced so we can check that they're all defined
-                refs.add(args[0])
             return call
 
         
         # walk the tree bottom up, applying term() to terminal values and func() to flattened nodes (non-terminals)
         def walk(n:node, func, term=lambda x:x):
             return func(n.kind, *(walk(c, func, term) if isinstance(c, node) else term(c) for c in n.children))
-        self.funcs = {name:walk(n, resolve) for name, n in self.labels.items()}
+        self.labels = {name:walk(n, resolve) for name, n in labels.items()}
         # apply the new labels generated by indices in previous walk of resolve()
         # all indices will be resolved in a single pass
-        self.funcs.update({name:walk(n, resolve) for name,n in index.items()})
+        self.labels.update({name:walk(n, resolve) for name,n in index.items()})
 
         self.__extent = 0
         self.__text = ''
-        self.error:... = None
-
-        unknown_labels = refs - self.funcs.keys()
-        if unknown_labels:
-            print(f'warn unknown labels: {unknown_labels}')
+        self.error = None
 
     def __call__(self, text:str, start='start', *, trim=True, strict=False) -> node|None:
         """
@@ -236,13 +210,12 @@ class PackratParser(Parser):
         This is probably only useful for testing the parser.
         """
         # reset
-        self.__extent = 0
         self.__text = text
         self.error = None
         self.cache_clear()
 
         # do parsing of self.__text from beginning with the start symbol
-        ast = self.funcs[start](0)
+        ast = self.labels[start](0)
 
         if ast is None:
             lines = text.split('\n')
@@ -254,7 +227,6 @@ class PackratParser(Parser):
             else:
                 pre = 0
             self.error.append(f'{lineno:03}:{lines[lineno]}')
-            print(pre, self.__extent)
             self.error.append('^'.rjust(self.__extent-pre + 4, ' '))
             if lineno + 1 < len(lines):
                 self.error.append(f'{lineno+1:03}:{lines[lineno+1]}')
@@ -337,6 +309,7 @@ class PackratParser(Parser):
                     return memo[0]
                 case _:
                     return tuple(memo)
+
         match ast.kind:
             case T.argument:
                 memo.append(self._trim(ast))
@@ -417,7 +390,7 @@ class PackratParser(Parser):
             return node(T.argument, x, start=x.start, stop=x.stop)
 
     def Label(self, idx, name):
-        if (x:=self.funcs[name](idx)):
+        if (x:=self.labels[name](idx)):
             return node(T.label, name, x, start=x.start, stop=x.stop)
 
     def Index(self, idx, name, offset):
@@ -483,11 +456,3 @@ fixedpoint = {
             'String': node('Node', 'String', node('Sequence', node('Choice', node('Sequence', node('String', '"'), node('Argument', node('ZeroOrMore', node('Sequence', node('NotLookahead', node('String', '"')), node('Label', 'Char')))), node('String', '"')), node('Sequence', node('String', "'"), node('Argument', node('ZeroOrMore', node('Sequence', node('NotLookahead', node('String', "'")), node('Label', 'Char')))), node('String', "'"))), node('Label', 'Spacing'))),
             'Char': node('Argument', node('Choice', node('Sequence', node('String', '\\'), node('CharClass', ']', '[', 'n', 'r', 't', "'", '"', '\\')), node('Sequence', node('String', '\\'), node('CharClass', '0-2'), node('CharClass', '0-7'), node('CharClass', '0-7')), node('Sequence', node('String', '\\'), node('CharClass', '0-7'), node('ZeroOrOne', node('CharClass', '0-7'))), node('Sequence', node('NotLookahead', node('String', '\\')), node('Dot',))))}
 
-if __name__ == "__main__":
-    count = 0
-    def walk(n):
-        if not isinstance(n, node):
-            return 0
-        return sum((1, *(walk(a) for a in n)))
-    count = sum( walk(v) for v in fixedpoint.values())
-    print(count)

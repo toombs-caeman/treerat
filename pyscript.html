@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Parser Vis</title>
+  <link rel="stylesheet" href="https://pyscript.net/releases/2024.7.1/core.css">
+  <script type="module" src="https://pyscript.net/releases/2024.7.1/core.js"></script>
+  <script src="viz-standalone.js"></script>
+
+  <link rel="stylesheet" href="LDT.css">
+  <script src="LDT.js"></script>
+  <py-config>
+  experimental_create_proxy = "auto"
+  [files]
+  "/base.py" = "./base.py"
+  "/parser.py" = "./parser.py"
+  </py-config>
+<style>
+html, body {
+    margin: 0;
+    height: 100%;
+}
+
+.textbounds {
+    width: 50%;
+    min-width: 50%;
+    min-height: 50%;
+    height: 50%;
+    display: inline-block;
+    overflow: scroll;
+}
+.left { float: left;background-color: floralwhite; }
+.right { float:right;background-color: ghostwhite; }
+#grammar, #source {
+   height: 100%;
+   width: 100%;
+   margin: 0;
+   padding:0;
+}
+#graph { width: 100%; }
+/* default styles for the grammar */
+.start { color:black; }
+.Definition { color:green; }
+.Choice { color:red; }
+.Sequence { }
+.Lookahead { color:yellow; }
+.NotLookahead {color:darkred; }
+.Node, .Argument {color:blueviolet; }
+.Index {color:darkgrey; }
+.Label {color:blue; }
+.ZeroOrOne, .ZeroOrMore, .OneOrMore {color:darkcyan}
+.String {color:orange;}
+.CharClass {color:orangered; }
+.Dot {color:darkslategray; }
+</style>
+</head>
+<body>
+<div class="textbounds left">
+    <textarea id="grammar" class="ldt"></textarea>
+</div>
+<div class="textbounds right">
+    <textarea id="source" class="ldt">
+TODO
+* badly formed grammars can cause the page to hang
+* some way to do partial updates of highlighting, since its too slow to type full speed.
+    * this probably needs better support in the underlying parser
+    * may need a custom cache that detects similarity between new input and previous, ejecting cache only where the input changes. (modifying cache spans?)
+* generate a static palette of like 20 colors to auto-apply to the right side
+* extract the list of kinds and generate a color picker UI for each one. Remember choices even if they change (but not randomly generated ones).
+    * let colorpicker be cleared to show underlying class
+* make a new Visualizer class which can show execution.
+* write introduction/guide
+    * maybe build-a-language walk through, explaining each step up to a tree walk evaluator.
+* dropdown + button to load examples (fixedpoint, markdown, math)
+
+    </textarea>
+</div>
+<button py-click="click_handler">Run</button>
+<div><pre id="errorG"></pre><pre id="errorS"></pre></div>
+<div id="graph"></div>
+
+<script type="py" src="/pyscript.py"></script>
+<script>
+// load fixedpoint text
+fetch('./fixedpoint.tr')
+  .then(response => response.text())
+  .then((data) => {
+    document.getElementById("grammar").value = data;
+  })
+// render a parse tree as an SVG
+function render(graph) {
+    Viz.instance().then(function(viz) {
+        var svg = viz.renderSVGElement(graph);
+        svg.style.width = '100%'
+        svg.style.height = 'auto'
+        console.log(svg.width)
+        document.getElementById("graph").appendChild(svg);
+    });
+};
+
+</script>
+
+</body>
+</html>

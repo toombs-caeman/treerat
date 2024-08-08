@@ -2,6 +2,11 @@
 
 a minimal-ish set of semantics for use with treerat syntax
 
+1. parse syntax -> ast
+2. graph generation -> graph
+    * name resolution
+    * type & effect checking/inference
+3. scheduling - dynamic
 
 # terminology
 sometimes it is useful to define 'new' words in order to discuss particular concepts. Rather than using actually new words, I'll be reusing words from the domain of particle physics to discuss the domain of programming. This is preferable because anyone with a passing familiarity with particle physics probably knows how to pronounce the words, there is already some existing structural relationship between the words, there are enough of them, and the physics domain is different enough from programming that there is no question which concept is being referred to.

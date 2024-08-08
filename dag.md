@@ -1,3 +1,28 @@
+Exploration of using a directed graph structure to model data dependency and flow through the program.
+My intuition is that graph algorithms offer a natural way to approach optimizing programs and introducing novel features
+such as implicit multithreading.
+
+In this model, "bosons" (nodes) are units of computation and "fermions" (edges) are "productions" or
+"temporal dependencies" which form relations between bosons.
+
+Before any evaluation, fermions exist in a superposition, being neither True or False.
+A boson may only begin evaluation if all of its incoming edges are True (or if it has none).
+This ensures that all dependencies are fulfilled and all incoming values exist.
+When a boson finishes evaluation, it marks each outgoing edge as True or False and potentially sets its value.
+
+Fermions are typed. They may represent a value (of a given type), a mutation, an exception,
+or anything else that would be considered a 'side effect' or 'external effect' in another context.
+They can also simply represent temporal ordering, rather than any native value of the language. Such constraints can
+be introduced by the language to enforce total ordering of effects when appropriate, eliminating race conditions.
+Boson evaluation is rendered pure by considering any possible side-effect as fermions.
+
+Since effects are represented as edges, we must have a special node "SINK" which consumes all uncaught effects.
+During manipulation of the graph this is considered a node to make the graph well formed.
+However, it doesn't have the same scheduling flexibility as a boson and must always evaluate effects in the exact order they are produced
+
+Correct programs must be acyclic.
+Loops are still possible to represent, but as a subgraph which is instantiated (reset) for each iteration.
+
 # Code is a DAG (abstract semantic graph ASG)
 consider "source code" to be a description of a directed acyclic graph (DAG) of computation where edges are immutable values (even if they appear to change) and nodes are pure functions (even if they don't look pure in source).
 Incoming edges are the arguments of that function (node), and outgoing edges are values produced by that function.
@@ -120,3 +145,45 @@ It enables some wild features
 * What if SOURCE and SINK had a concept of latency and locality for their interactions with the outside world? The compiler could allocate computation across network boundaries depending on whether it is faster to crunch the numbers here and send it over the wire, or to send the data and crunch it there. If you have a sharded database and highly parallel code, the compiler could move code to the data transparently.
     * this 'automatic' is a bit rough, since you need a way to safely and transparently send data over the wire, and be aware of changing network topology and latency.
 
+# threading
+1. for loops are broken into map or reduce by functional programmers
+    * maps: computation is not affected by order (unordered)
+    * reductions: computation **is** affected by order (ordered)
+    * special case: modifying loop var: still a reduction
+    * special case: sum: reduction because order affects intermediate steps, but map because the function being applied is associative so the final result is unaffected by order. 
+2. for loops are an efficient representation of maps, but not always an efficient implementation
+    * maps can be threaded assuming that the computation is signifcant enough to cover the overhead of doing so.
+3. In most languages, programmers must decide when and where to thread
+    * to gain speed, the programmer must be aware explicitly of performance characteristics of functions and threads
+    * to do so correctly, must be aware of data and effect dependency (especially difficult for languages with mutation)
+    * often, must hard-code number of available threads, or use thread pools
+    * small changes to the single threaded code can result in very different code for efficient threading.
+        * in effect, explicit threads are inexpressive
+
+Formula for (estimated) speedup, aka time saved by threading a map rather than single threading:
+```
+(function cost:F) * (# iterations:I) = (function cost:F + per thread overhead:O) * (# iterations: I) / (# threads: T) + speedup:S
+S = FI - I(F+O)/T
+S = I(FT-F-O)/T
+S = I(F(T-1)-O)/T
+```
+
+under GIR, all bosons have a concept of (estimated) cost, and all pairs are unordered unless there is a fermion path between them. This means that the compiler both has ability to implicitly thread code and can use the speed up estimation as a heuristic to probabilistically maximize speed.
+
+`future` and `sync` primitives to allow treating superpositions as values. `sync` unwraps the superposition and either produces a value or blocks. If the fermion becomes false then the thread can be culled (since it will never be able to go forward).
+Really all values are futures, but the primitives allow syncing to futures before they are defined (in lexical order). If doing so creates a cycle, then that is detected at sync.
+
+# TODO
+* rewrite to better define bosons/fermions
+* associative operators can have undirected/bidirectional fermions?
+* applicable graph algorithms?
+    * bridge detection, coloring - potential threading interfaces?
+        * https://en.wikipedia.org/wiki/Spectral_clustering
+        * LOBPCG
+    * flow max - max/average throughput of a subgraph (useful for threading, estimating runtime for finite programs?)
+* look at BEAM languages (erlang, gleam) for concurrency primitives
+* network latency estimation for source nodes?
+* the number of outgoing edges from subgraph is nx.volume
+* nx.greedy_modularity_communities for generating sparsly connected subgraphs?
+* [end-to-end graph-level optimizing compiler](https://arxiv.org/abs/1802.04799)
+* [implicit threads](https://w3.cs.jmu.edu/kirkpams/OpenCSF/Books/csf/html/ImplicitThreads.html)

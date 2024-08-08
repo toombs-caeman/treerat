@@ -1,146 +1,218 @@
 import subprocess
 import tempfile
-import copy
-
-import graphviz
+import random
 from itertools import count
-from collections import defaultdict
+import pygraphviz as gz
+import networkx as nx
 
-import graph
-import standard
 import parser
-import evaluator
+from base import *
 
-class Digraph(graphviz.Digraph):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+type vis_enabled = gz.AGraph|nx.DiGraph|node|None
+def normalize(__o:vis_enabled) -> gz.AGraph:
+    # normalize data to gz.AGraph
+    match __o:
+        case gz.AGraph():
+            return __o.copy()
+        case nx.DiGraph():
+            return nx.nx_agraph.to_agraph(__o)
+        case node():
+            G = gz.AGraph(directed=True)
+            def walk(n):
+                lits = []
+                for i,a in enumerate(n):
+                    if isinstance(a, node):
+                        walk(a)
+                        G.add_edge(n, a, label=str(i))
+                    else:
+                        lits.append(repr(a))
+
+                label = f"{n.kind}({', '.join(lits)})" if lits else n.kind
+                G.add_node(n, label=label)
+            walk(__o)
+            return G
+        case None:
+            return gz.AGraph(directed=True)
+        case _:
+            raise ValueError(type(__o), __o)
+
+class Vis(Visualizer):
+    def __init__(self, data:vis_enabled=None):
         self.frames = []
-    def next_step(self, reset:bool|int=False):
-        """add a new frame to the graph animation and optionally reset the graph to a previous frame"""
-        reset = -int(reset)
-        self.frames.append(copy.deepcopy(self))
-        if reset:
-            self.body = self.frames[reset-1].body
-    def gif(self, outfile:str, delay=100):
-        """create an animated gif"""
-        filecount = len(self.frames) + 1
-        #print(f'making {filecount} temp files')
+        data = normalize(data)
+        if data:
+            self.frames.append(data)
+    @classmethod
+    def from_eval(cls, evil:Evaluator, ast:node):
+        vis = cls()
+        try:
+            evil(ast, vis=vis)
+        except EvalError as e:
+            print(e)
+        return vis
+        pass
+
+    def draw(self, name:str, delay=100):
+        """render graph as either a png or gif, depending on frame count."""
+        name = f'{name}.gif'
+        if len(self.frames) == 1:
+            self.frames[0].layout('dot')
+            return self.frames[0].draw(name, format='gif')
+
+        filecount = len(self.frames)
+        #print(f'making {filecount} frame files')
         files = [tempfile.NamedTemporaryFile(suffix='.png') for _ in range(filecount)]
         for i, g in enumerate(self.frames):
-            g.render(outfile=files[i].name, cleanup=True, format='png')
-        self.render(outfile=files[-1].name, cleanup=True, format='png')
+            g.layout('dot')
+            g.draw(files[i].name)
         cmd = ['magick']
         for file in files:
             cmd.extend(( '-delay', str(delay), file.name))
-        cmd.append(outfile)
+        cmd.append(name)
         #print(' '.join(cmd))
         subprocess.call(cmd)
+        print(f'wrote {filecount} frames to {name!r}')
         for f in files:
             f.close()
 
+    def __getattr__(self, name):
+        return getattr(self.frames[-1], name)
 
+    def add_frame(self, data:int|vis_enabled=-1):
+        """add a new frame to the graph animation based on a previous one."""
+        if isinstance(data, int):
+            new = self.frames[data].copy()
+        else:
+            new = normalize(data)
+        self.frames.append(new)
 
-def vis(data:parser.node|graph.graph|standard.Model|None, *args) -> Digraph:
-    """Dispatch visualizations based on type of data to visualize."""
-    match data:
-        case parser.node():
-            return vis_ast(data, *args)
-        case standard.Model():
-            return vis_model(data, *args)
-        case None:
-            print(f"a call to vis received None: {args!r}")
-        case _:
-            print(f"don't know how to visualize {type(data)}: {args!r}")
-    return Digraph()
+    def attr(self, __t, __h=None, /, **attrs):
+        if __h is None:
+            self.frames[-1].add_node(__t, **attrs)
+        else:
+            self.frames[-1].add_edge(__t, __h, **attrs)
 
-def vis_ast(ast:parser.node, source:str|None=None):
-    dg = Digraph()
+def vis_ast(ast:node, source:str|None=None):
+    """Visualize an abstract syntax tree as a directed graph."""
+    dg = gz.AGraph(directed=True)
     id = map(str, count())
     def walk(ast, i):
         match ast:
-            case parser.node():
-                dg.node(i, label=ast.kind)
+            case node():
+                dg.add_node(i, label=ast.kind)
                 for ia,(a, I) in enumerate(zip(ast, id)):
                     walk(a, I)
-                    dg.edge(i, I, label=str(ia))
+                    dg.add_edge(i, I, label=str(ia))
             case tuple():
-                dg.node(i, label='()')
+                dg.add_node(i, label='()')
                 for ia,(a, I) in enumerate(zip(ast, id)):
                     walk(a, I)
-                    dg.edge(i, I, label=str(ia))
+                    dg.add_edge(i, I, label=str(ia))
             case _:
-                dg.node(i, label=repr(ast))
+                dg.add_node(i, label=repr(ast))
     walk(ast, next(id))
     if source:
         i = next(id)
         l:str = source.replace('\n', '\\l')
         if not l.endswith('\\l'):
             l += '\\l'
-        dg.node(i, shape='box', label=l, labelloc='t')
+        dg.add_node(i, shape='box', label=l, labelloc='t')
     return dg
 
-def vis_model(model:standard.Model, name='comp'):
-    dg = Digraph(name, strict=True)
-    # make all nodes with labels
-    for h,b in model._bosons.items():
-        op, *args = b
-        dg.node(str(h), label=f"{op}({', '.join(map(repr, args))})" if all(isinstance(a, str) for a in args) else op)
-    # map comp to predecessors
-    G = graph.map(model._graph, str)
-    rG = defaultdict(set)
-    # make all edges
-    for h, tails in G.items():
-        for t in tails:
-            dg.edge(t, h)
-            rG[t].add(h)
-    try:
-        order = [str(hash(n)) for n in model.order]
-    except graph.CycleError as ce:
-        err = Digraph('error')
-        err.attr(label='cycle detected', labelloc='t')
-        for h, tails in ce.args[0].items():
-            h = repr(h)
-            err.node(h, label=h)
-            for t in tails:
-                t = repr(t)
-                err.edge(t, h)
-        err.render(outfile='error.png', format='png', cleanup=True)
 
-        dg.next_step()
-        for n in G:
-            dg.node(n, color='red')
-        return dg
+def palette(n, s=0.5, v=0.5):
+    """generate n equally spaced HSL colors. Hopefully they're unique enough"""
+    h = 360 * random.random()
+    step = 360/n
+    for _ in range(n):
+        h = (h + step) % 360
+        s = min(max(20, random.gauss(80, 60)), 100)
+        l = min(max(40, random.gauss(80, 60)), 90)
+        yield f'hsl({h}, {s}%, {l}%)'
 
-    # highlight the order of execution
-    WAIT  = 'black' # computation is not ready, black is the default color
-    READY = 'blue'  # computation is ready to proceed
-    ACTIVE= 'green' # computation is active during this step
-    DONE  = 'gray'  # computation is complete
-    for n in order:
-        # mark current node as active
-        for t in G[n]:
-            dg.edge(t, n, color=ACTIVE)
-        dg.node(n, color=ACTIVE)
-        # transition to the next step
-        dg.next_step()
-        # mark the old node as done
-        for h in rG[n]:
-            dg.edge(n, h, color=READY)
-        for t in G[n]:
-            dg.edge(t, n, color=DONE)
-        dg.node(n, color=DONE)
-    return dg
+def vis_highlight(source:str, P:parser.PackratParser, outfile='highlight.html'):
+    """Generate html that shows rough syntax highlighting of a parse tree."""
+    ast = P(source)
+    if ast is None:
+        # TODO
+        print("TODO highlight can't visualize errors yet")
+        return
+    def tohtml(n:node):
+        body = []
+        last = slice(n.start)
+        for a in n:
+            match a:
+                case str():
+                    body.append(source[last.stop:last.stop+len(a)])
+                    last = slice(last.stop + len(a))
+                case node():
+                    body.append(source[last.stop:a.start])
+                    last = a
+                    body.append(tohtml(a))
+        if last:
+            body.append(source[last.stop:n.stop])
+        return f"<span class={n.kind!r} start={n.start} stop={n.stop}>{''.join(body)}</span>"
+
+    kinds = set()
+    def find_kinds(n):
+        if isinstance(n, node):
+            kinds.add(n.kind)
+            for x in n:
+                find_kinds(x)
+    find_kinds(ast)
+    
+    body = tohtml(ast).replace('\n','↵<br>')
+    css = ''.join(
+        f'.{node} {{background-color: {color};}}'
+        for node, color in zip(kinds, palette(len(kinds))))
+    legend = ' '.join(f'<span class={kind!r}>{kind}</span>' for kind in kinds)
+
+    with open(outfile, 'w') as f:
+        f.write(f"""<!DOCTYPE html>
+    <html>
+      <head>
+        <title>Syntax Highlighting</title>
+        <style>
+          span {{
+            border-style: solid;
+            border-radius: 10px;
+            border-color: black;
+            border-width: 1px;
+            line-height: 24px;
+            padding: 2px;
+            }}
+          {css}
+        </style>
+      </head>
+      <body>
+        Legend: {legend}
+        <hr>
+        <p>{body}</p>
+      </body>
+    </html>
+    """)
 
 
 if __name__=="__main__":
+    import graph
     import testlang
+    vis_highlight(testlang.sample, testlang.parser)
     
-    ast = testlang.sample_ast
-    vis(ast, testlang.sample).render(outfile='ast.png', cleanup=True, format='png')
+    #vis(testlang.sample_ast, testlang.sample).render(outfile='ast.png', cleanup=True, format='png')
+    Vis(testlang.sample_ast).draw('ast')
+    Vis.from_eval(testlang.TestEval(), testlang.sample_ast).draw('calc')
 
+    m = graph.Graph()
+    G = nx.DiGraph()
+    G.add_edge('a', 'b')
+    G.add_edge('b', 'c')
+    G.add_edge('a', 'c')
+    v = Vis()
+    m.run(G, v)
+    v.draw('compute')
+    quit()
     # name resolution / computation graph generation
     names = evaluator.namespace() # comp hashes, keyed by a name which currently refer to them
-    model = standard.Model()
     total_orders = {}
     def x(n:parser.node):
         if not isinstance(n, parser.node):
@@ -169,7 +241,7 @@ if __name__=="__main__":
                 expr = x(n[0])
                 comp = ('Print', expr)
                 dep = (expr,) if last_print is None else (comp[1], last_print)
-                comp = model.node(comp, *dep)
+                comp = model.add_node(comp, *dep)
                 total_orders['Print'] = comp
                 model.add_target(comp)
 
@@ -185,6 +257,6 @@ if __name__=="__main__":
                         comp.append(a)
                         deps.append(a)
                 return model.node(tuple(comp), *deps)
-    x(ast)
+    x(testlang.sample_ast)
     
-    vis(model).gif('compute.gif')
+    Vis(model).gif('compute')
