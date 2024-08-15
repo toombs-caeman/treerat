@@ -1,8 +1,8 @@
 import parser
 from itertools import count
-from functools import cache
-import js
+
 from pyscript import document
+import js
 from pyscript.ffi import to_js, create_proxy
 from pyscript.web.elements import span
 from pyscript.web import dom
@@ -45,7 +45,10 @@ def node2graph(n):
 
 def click_handler(event=None):
     text = document.querySelector('#grammar').value
-    tree = parser.PackratParser()(text)
+    try:
+        tree = parser.PackratParser()(text)
+    except parser.ParseError:
+        return
     js.graph = to_js(node2graph(tree))
     js.render(js.graph)
 
@@ -55,14 +58,17 @@ class Parser:
         self.P = parser.PackratParser()
 
     def tokenize(self, source, grammar=None):
-        if grammar is not None:
-            try:
+        try:
+            if grammar is not None:
                 self.P = parser.PackratParser(grammar)
-            except parser.ParseError:
-                return source
-        self.source = source
-        self.kinds = set()
-        tree = self.P(source)
+            self.source = source
+            self.kinds = set()
+
+
+
+            tree = self.P(source)
+        except parser.ParseError:
+            return source
         js.console.log(repr(tree))
         if not tree:
             return source
@@ -114,8 +120,4 @@ js.grammar = js.TextareaDecorator.new(g, js.Gparser, None);
 js.Sparser = create_proxy(Parser())
 js.code = js.TextareaDecorator.new(document.getElementById("source"), js.Sparser, g);
 
-
-
 js.console.log('loaded the click handler')
-#click_handler()
-

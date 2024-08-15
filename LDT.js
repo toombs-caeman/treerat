@@ -192,21 +192,21 @@ function TextareaDecorator( textarea, parser, grammar ){
         if( input ){
             color( input, output, parser );
             // determine the best size for the textarea
-            //var lines = input.split('\n');
-            //// find the number of columns
-            //var maxlen = 0, curlen;
-            //for( var i = 0; i < lines.length; i++ ){
-            //    // calculate the width of each tab
-            //    var tabLength = 0, offset = -1;
-            //    while( (offset = lines[i].indexOf( '\t', offset+1 )) > -1 ){
-            //        tabLength += 7 - (tabLength + offset) % 8;
-            //    }
-            //    var curlen = lines[i].length + tabLength;
-            //    // store the greatest line length thus far
-            //    maxlen = maxlen > curlen ? maxlen : curlen;
-            //}
-            //textarea.cols = maxlen + 1;
-            //textarea.rows = lines.length + 2;
+            var lines = input.split('\n');
+            // find the number of columns
+            var maxlen = 0, curlen;
+            for( var i = 0; i < lines.length; i++ ){
+                // calculate the width of each tab
+                var tabLength = 0, offset = -1;
+                while( (offset = lines[i].indexOf( '\t', offset+1 )) > -1 ){
+                    tabLength += 7 - (tabLength + offset) % 8;
+                }
+                var curlen = lines[i].length + tabLength;
+                // store the greatest line length thus far
+                maxlen = maxlen > curlen ? maxlen : curlen;
+            }
+            textarea.cols = maxlen + 1;
+            textarea.rows = lines.length + 2;
         } else {
             // clear the display
             output.innerHTML = '';

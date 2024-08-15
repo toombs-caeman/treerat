@@ -1,44 +1,171 @@
-# type heirarchy
-low-level types
-* num - generic number
-    * int
-        * {i,u}{16,32,64}
-        * {i,u}size
-    * float
-        * f{16,32,64}
-* string - pythonic immutable strings
-    * arr[char]
-* iterable - generic iterable
-    * array - immutable, uniform type
-    * vector - 
-* collection
-    * set
-    * dict
-        * namespace
-    * tuple - immutable, 
-* ref - rustic pointer
-    * raw pointer
-* producer
-    * function
-        * FFI
-    * coroutine
-        * remote call
-join python sql and apl in an unholy union
-allow dense array syntax but encourage pythonic style
-allow persistence and strong consistency guarantees by embedding a sqlite database
+A description of a (not yet named) language which I would like to build.
+
+The purpose of this language is to develop ideas around the graph intermediate representation ([GIR](dag.md)), type inference, and implicit threading.
+
+# General Semantics
+Code is a textual description of Computation.
+Computation produces one or more Effects when run, through the application of Functions to Values.
+
+Effects are not Values.
+An Effect is any externally visible change that results from doing the Computation.
+"produce a Value" is an Effect, as is "raise an Error" or "mutating a Value".
+
+Values do not exist in Code.
+There are only Literals which are text that describe Values by implicitly or explicitly being assigned Traits.
+
+Functions are Values which implement a Computation.
+Functions do not exist in Code (they are Values).
+Functions may be applied to any set of Values which match the Traits defined by the Function's arguments.
+Functions may only produce Effects matching the traits it specifies.
+A Function application is not required to produce all Effects the Function is capable of producing.
+
+Casts are Functions with the special Trait that their result is considered equivalent to their input in all cases. Thus Casts can be implicitly inserted into any Computation even when not described by the Code.
+
+Types are Values used to produce a Value from a Literal. They can be considered a specialized Function.
+Types do not exist in Code (they are Values).
+Any Type which implements all Traits assigned to a Literal may be used to instantiate a corresponding Value.
+There may be more than one available Type but it is an Error for there to be no available Types for any given Literal.
+A Value is said to be 'an instance of' or simply 'of' a Type if it created from that Type.
+All Values are an instance of exactly one Type.
+
+When more than one Type is assignable to a Literal, Types are selected according to a heuristic which uses the most efficient available Type and which minimizes Casts.
+
+A Function application can only "be applied" when all of the input values (including the Function to be applied) have been produced.
+A Function only needs to be applied if it has the possibility of producing an Effect.
+There's no point in doing work that will not cause externally visible changes.
+
+# graph semantics
+Control flow is nodes and values are edges. Node type determines when a node can be scheduled. Only three real types, loop, branch, and apply.
+node types:
+* loop,break - allow some self loops, where each iteration depends only on preceeding iterations (re-instantiation of subgraphs)
+* branch,join - conditional is ready, branches as subgraphs
+
+* apply,return - all incoming edges are ready
+* raise,try,catch - all incoming edges are ready, not special, just consumes an unusual effect
+* input,output - immediate when all incoming edges are ready, but may sleep before producing values
+
+# Specifics
+Given these semantics, an implementation of this language requires a few parts:
+* a way to parse Code into a network of Literals and Function applications, connected by their potential Effects.
+    * text parsing, name resolution, trait propogation, transformation to GIR
+* a scheduler that selects the next function to apply in order to possibly produce effects
+* an Interpreter that applies functions selected by the scheduler
+* a selection of native Types, Traits, Casts, Effects and Functions.
+* an interface for defining new Types, Traits, Casts, Effects and Functions.
+
+* compiler: Code -> tree -> graph -> optimal graph -> disk
+* runtime: disk -> graph -> Effects
+
+# Core Traits
+* callable - that which can be applied (functions, types, etc.)
+    * input - a callable which relies on external input
+    * output - a callable which produces effects external to the program
+    * totalorder(x...) - causes race conditions unless there is a total ordering of all computations x...
+    * commutative(x) - f(a,b) === f(b,a)
+    * associative(x) - f(a, f(b, c)) === f(f(a,b), c) which enables some graph re-writes for better parallelism
+    * distributive(x,y) - [distributive](https://en.wikipedia.org/wiki/Distributive_property)
+    * [category of properties of binary operations](https://en.wikipedia.org/wiki/Category:Properties_of_binary_operations)
+    * [magma](https://en.wikipedia.org/wiki/Magma_(algebra))
+    * identity and inverse elements
+* container(x) - can determine if a value of type x exists in the container Value
+    * enumerable(x) - container can produce a sequence of zero or more values of type x. It has a length (size)
+    * mapping(x,y) - container produces y for every x in container
+    * sortable - true if enumerable(x) and x implements comparable(x)
+    * insert(x) - can add x to container
+    * remove(x) - can remove x from container
+* maxlen(int) - container has a maximum number of contained items
+* queue(x) - represents a fifo queue, not necessarily container(x) or enumerable(x)
+* stack(x) - represents a filo stack
+* hasattr(x) - a Value has a named attribute x
+* comparable(x) - a Value can be compared to type x
+* isvalue(x) - a Value is statically determinable
+* cast(x) - Value can be cast to type x
+* cast(bool) - a Value can be considered True or False
+* hashable - a Value can be hashed, specialization of cast(int)
+* threadsafe - a value can be safely shared between threads
+* numeric - a number
+    * int - an integer
+        * int8, int16, int32, int64, ...
+        * uint - an unsigned integer
+            * uint8, ...
+    * float - an IEEE floating point number
+        * f32, f64, ...
+    * complex - a complex number
+* controlflow - a function which receives its arguments unevaluated
+* persist - a value can persist itself to disk
+
+# core types
+* set[V:hashable]: container[V]
+* hashmap[K:hashable,V]: enumerable[K], mapping[K,V]
+    * valueview: enumerable[V]
+* list[V]: enumerable[V]
+* ndarray[shape]: enumerable[numeric] - implements vector math and broadcasting like numpy
+
+* rune - a single unicode (utf-8) character
+* string: list[rune]
+
+* range: enumerable[int]
+* int
+* float
+* complex
+* bool: int[0]|int[1]
+
+* byte: int8
+* bytearray: list[byte]
+
+* chan[X]: threadsafe, queue[X]
+* regex?
+
+* function
+* exception
+
+* branch,join: controlflow
+* loop,break: controlflow
+* apply: controlflow
+* raise: controlflow
+* try,catch: controlflow
+control flow receives subgraphs as arguments, rather than other values.
+
+# special syntax
+* fstring - `f'{x} {y}'` => `cast_string(x) + ' ' + cast_string(y)`
+
+* function application
+    * `x.sort()` looks for any function named `sort` with trait receive[type(x)] or receive[Y:rcast[type(x)]]
+    * if used as a statement, `x.sort()` => `x = sort(x)`
+        * if it is efficient to do so and the value is not shared, this may actually sort in place
+    * if used as an expression `x.sort()` => `sort(x)`
+
+* pattern matching assignment
+* aliasing - solving systems of equations?
+# special properties
+leave it to the compiler to decide:
+* whether or not a function modifies a value in place or returns a new value.
+    * `x.sort()` === `x = x.sort()` (=== `y = x.sort()` iff `x` is not accessed afterwards)
+    * whether a value is *really* mutable or not doesn't matter.
+* where it is efficient to thread code
+* where to cast
+* how to make code cache efficient
+* what to compute at comptime, vs runtime.
+* value lifetimes
+
+* which input functions are applied at comp time and which are 'deferred' to runtime?
+    * let the full language be available at compile time
+* function lifting (implicit map over arguments of unexpected rank)
+
+# examples
+* a literal `10` has trait "numeric", but that trait is fulfilled by any int, float or complex type.
+    * a literal `1.2` has traits "numeric" and "float", so cannot be implemented by an int.
+    * the expression `1 + 0.2` has traits numeric and float. since `1` may be implemented by int or float, it will be implemented as float in order to avoid a cast from int to float before `+`
+* a literal function application `sort(x,y)` has traits "callable", "named(sort)", and "receives(type(x), type(y))"
+    * may be called as `x.sort(y)`
 
 # orthogonal syntax
 unify parts of programming languages that are typically similar but different syntax.
 
 for..in, foreach, and map are closely related keywords across many different languages.
-All use cases of these are served by the singular loop, aka '@'.
+All use cases of these are served by the singular loop.
 Loop also handles the need for while, do..while, reduce and filter.
-
-Similarly, '?' handles the need for if, else, and case keywords
-
-only use one quote style for strings
-
-prefer expressions (and blocks) over statements
+Similarly, branch handles the need for if, else, and case keywords
 
 rather than special syntax for generics and macros let the full language be available at compile time
 
@@ -65,26 +192,6 @@ python
 elixir
 * assignment is actually pattern matching
 
-# semantics
-values and expressions
-* a value is a scalar (number string or a collection of values)
-* an expression is not a value, but may produce a value (zero or one)
-* names may be assigned to expressions or values
-* there are three types of expressions which are not values: blocks, functions, operators
-    * blocks take zero arguments
-    * functions and blocks
-
-# meta-syntax v0.0
-define foreign function interface (ffi).
-use unicode literal functions for meta-programming.
-perhaps meta-language mechanics uses unicode characters,
-while the more common language elements can use ascii symbols
-methods for modifying the parsing grammar
-use precedence climbing
-
-before cementing syntax with any backward compatible processes, generate permutations of 'valid syntax'
-and make sure they have clear semantics. All parsable expressions should have clear semantic meaning
-(whether or not it is a useful construct, or valid code in this instance.
 
 # core syntax v0.1
 literal types

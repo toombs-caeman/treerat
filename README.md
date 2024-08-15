@@ -254,8 +254,14 @@ I have a bunch of ideas for 'micro' languages which would be greatly aided by th
 * [semantic versioning](https://semver.org/)
 * erlang/beam
 * [weathering the software winter](https://100r.co/site/weathering_software_winter.html) a discussion of why you might want to be fully in control of your software stack.
+* [Xu Bing’s Book from the Ground](https://www.xubing.com/en/work/details/188?classID=12&type=class) on the dissociation of syntax and semantics
 
+* [heartbeat scheduler](https://www.andrew.cmu.edu/user/mrainey/heartbeat/heartbeat.html)
+    * [spice](https://news.ycombinator.com/item?id=41230344)
+* [austral](https://github.com/austral/austral/)
 # TODO
 * jank around the definition of the fixedpoint and interactions between Argument and OneOrMore,etc.
 * type system
 * grammar registry
+* probably should separate out the visualization & general toys from the specific language I'm trying to make
+* arno

@@ -21,7 +21,6 @@ html, body {
     margin: 0;
     height: 100%;
 }
-
 .textbounds {
     width: 50%;
     min-width: 50%;
@@ -29,15 +28,12 @@ html, body {
     height: 50%;
     display: inline-block;
     overflow: scroll;
+    margin: 0;
+    padding:0;
 }
 .left { float: left;background-color: floralwhite; }
 .right { float:right;background-color: ghostwhite; }
-#grammar, #source {
-   height: 100%;
-   width: 100%;
-   margin: 0;
-   padding:0;
-}
+
 #graph { width: 100%; }
 /* default styles for the grammar */
 .start { color:black; }
@@ -57,24 +53,24 @@ html, body {
 </head>
 <body>
 <div class="textbounds left">
-    <textarea id="grammar" class="ldt"></textarea>
+    <textarea id="grammar"></textarea>
 </div>
 <div class="textbounds right">
-    <textarea id="source" class="ldt">
+    <textarea id="source">
 TODO
 * badly formed grammars can cause the page to hang
-* some way to do partial updates of highlighting, since its too slow to type full speed.
-    * this probably needs better support in the underlying parser
-    * may need a custom cache that detects similarity between new input and previous, ejecting cache only where the input changes. (modifying cache spans?)
-* generate a static palette of like 20 colors to auto-apply to the right side
+* generate a static palette of colors to auto-apply to unknown kinds
 * extract the list of kinds and generate a color picker UI for each one. Remember choices even if they change (but not randomly generated ones).
     * let colorpicker be cleared to show underlying class
+* dropdown + button to load examples (fixedpoint, markdown, math)
+* put version on blog. just show the parser step
+
+NEXT
 * make a new Visualizer class which can show execution.
+   * using pyscript
 * write introduction/guide
     * maybe build-a-language walk through, explaining each step up to a tree walk evaluator.
-* dropdown + button to load examples (fixedpoint, markdown, math)
-
-    </textarea>
+</textarea>
 </div>
 <button py-click="click_handler">Run</button>
 <div><pre id="errorG"></pre><pre id="errorS"></pre></div>

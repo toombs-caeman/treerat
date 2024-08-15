@@ -20,6 +20,13 @@ put in a lot of time recently.
 # 8-07
 17.5-22: move parser.py trim into base function calls in order to prep translation to javascript
 
+# 8-08
+7-9:figure out how to more efficiently cache using difflib.SequenceMatcher.get_opcodes()
+    * this sometimes fails when a definition ends in ZeroOrMore because its range appears unchanged, but it could consume more input if given the chance.
+
+# 8-12
+18.5-20: LDT and reading CI
+20.5-23.5: defining specific traits and types for a core of toylang
 
 # todo
 * optim: make sure that trim isn't doing extraneous work

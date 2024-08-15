@@ -1,5 +1,7 @@
 #!/usr/bin/env python
+import time
 import unittest
+from base import ParseError
 from parser import fixedpoint, PackratParser, node, ast2labels
 
 
@@ -109,7 +111,40 @@ class TestParser(unittest.TestCase):
         P = PackratParser()
         self.assertIsNone(P('bogus <- 123'), msg=f'should not have been able to parse malformed string')
         self.assertIsNotNone(P.error, msg='failing to parse should have generated an error message')
+        # TODO this should capture more than just the first error. needs to have sync token
+
+    @unittest.skip("this takes a long time and doesn't work yet")
+    def testCache(self):
+        # try to test how efficient caching is.
+        P = PackratParser(
+            """
+            %start <- SPACE? (%word SPACE?)+ EOF
+            %word <- 'bird'
+            SPACE <- ' '+
+            EOF <- !.
+            """)
+        string = 'bird'
+        i = 0
+        t0 = time.time()
+        try:
+            for i in range(1000):
+                x = P(string)
+                #print(x)
+                self.assertIsNotNone(x)
+                string += ' bird'
+        except KeyboardInterrupt:
+            pass #t = time.time() - t0
+        t = time.time() - t0
+        print(f'succeeded in {i} iterations in {t} seconds.')
+        # with functools.cache is about 6.4 seconds
+        self.assertLessEqual(t, 2, msg=f'time for parsing 1000 iterations should be less than 2 seconds')
         # TODO
+    def testLeftRecursion(self):
+        # the parser shouldn't hang or crash if given a mutually left recursive grammar
+        P = PackratParser("a <- a ' '")
+        self.assertRaises(ParseError, P, '   ')
+
+
 
 
 if __name__ == "__main__":

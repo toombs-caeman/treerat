@@ -1,9 +1,47 @@
 from functools import cache, wraps
+import difflib
 
 from base import *
 
 # TODO error recovery marker in fixedpoint?
 __all__ = ['node', 'PackratParser', 'ParseError']
+
+def node_cache(wrapped, f=None):
+    """a function cache wrapper which is specialized for partial evictions of nodes based on an interval tree of diff opcodes."""
+    # allow decorator partial
+    if f is None:
+        return lambda f:node_cache(wrapped, f)
+
+    cache:dict[int,node|None]  = {}
+
+    @wraps(wrapped)
+    def wrapper(idx:int):
+        if idx not in cache:
+            cache[idx] = f(idx)
+        return cache[idx]
+
+    def update(ops:list[tuple[str, int, int, int, int]]):
+        # filter out failures to match and empty matches
+        # failures to match have no bounds so they cannot be bounds checked (could be argued to be to the end of __text)
+        old = {k:v for k,v in cache.items() if v and not v.start==v.stop}
+        keys = set(old)
+        cache.clear()
+        for tag, i1, i2, j1, j2 in ops:
+            # we've already filtered so tag == 'equal'
+            for start in keys.intersection(range(i1,i2)):
+                n = old[start]
+                del old[start]
+                if n.stop < i2:
+                    n.start = j1+n.start-i1
+                    n.stop = j2+n.stop-i2
+                    cache[n.start] = n
+
+
+    # expose clearing the cache
+    wrapper.cache_clear = cache.clear
+    wrapper.update = update
+
+    return wrapper
 
 class T:
     """To mitigate typos, define all the strings used internally as identifiers"""
@@ -149,32 +187,55 @@ class PackratParser(Parser):
         # normalize the incoming specification for internal use
         self.labels = normalize(__from, **labels)
 
+        # flag for if the grammar is wellformed or not
+        self.wellformed = True
+
         # TODO detect mutual left recursion
         #   for each rule, check terms sequentially to determine if that rule can match an empty string.
         #   if the rule cannot match an empty string, discard it.
         #   if the rule recurses to a previous rule, it is mutually left recursive
-        mlr = set()
-        def lcurse(n:node, seen:list):
+        def lcurse(n:node, seen:set):
             """return a list of mutually recursive kinds, or none"""
-            nonlocal mlr
+            if isinstance(n, tuple):
+                raise ValueError(tuple)
             match n.kind:
-                case T.string|T.index:
-                    return
+                case T.string:
+                    return not n[0]
+                case T.index:
+                    return False # TODO normalize index first, then do these passes
+                    l = self.labels[n[0]]
+                    return lcurse(node(l.kind, *l[n[1]:]), seen)
                 case T.label:
-                    if (idx:=seen.index(n.kind)) != -1:
-                        return seen[idx:]
-                    seen.append(n[0])
-                    return lcurse(self.labels[n[0]], seen)
+                    if n[0] in seen:
+                        return True
+                    return lcurse(self.labels[n[0]], seen|{n[0]})
                 case T.node:
                     return lcurse(n[1], seen)
                 case T.zeroormore|T.zeroorone:
-                    pass
-                case _:
+                    return None
+                case T.dot|T.charclass:
+                    return False
+                case T.choice:
+                    return any(lcurse(x, seen) for x in n)
+                case T.sequence|T.oneormore|T.argument:
                     return lcurse(n[0], seen)
+                case T.lookahead|T.notlookahead:
+                    return # TODO
+                case _:
+                    raise ValueError(n.kind)
+        mlr = set()
+        for k,v in self.labels.items():
+            seen = {k}
+            if lcurse(v, seen):
+                mlr.add(k)
+        if mlr:
+            print(f'warn left recursive {mlr}')
+            self.wellformed = False
+
 
 
         # resolve labels into cache-friendly function applications
-        self.__cache_clears = []
+        self.__caches = []
         index = {}  # new labels to node
         refs = set() # set of kinds refered to by labels
 
@@ -191,14 +252,13 @@ class PackratParser(Parser):
                 args = (newname,)
             method = getattr(self, kind)
 
-            @cache
-            @wraps(method)
+            @node_cache(method)
             def call(idx:int) -> node|None:
                 if (n:=method(idx, *args)):
                     self.__extent = max(self.__extent, n.stop)
                 return n
 
-            self.__cache_clears.append(call.cache_clear)
+            self.__caches.append(call)
             if kind == T.label:
                 # make sure this is accessible later if there's an index into this label
                 call.name = args[0]
@@ -222,6 +282,7 @@ class PackratParser(Parser):
         unknown_labels = refs - self.funcs.keys()
         if unknown_labels:
             print(f'warn unknown labels: {unknown_labels}')
+            self.wellformed = False
 
     def __call__(self, text:str, start='start', *, trim=True, strict=False) -> node|None:
         """
@@ -235,14 +296,27 @@ class PackratParser(Parser):
         The usual output can be obtained by passing the tree to Parser._trim()
         This is probably only useful for testing the parser.
         """
+        if not self.wellformed:
+            raise ParseError('attempting parse with malformed parser')
+        ## try to do partial cache eviction.
+        #ops = [x for x in difflib.SequenceMatcher(None, self.__text, text).get_opcodes() if x[0] == 'equal']
+        #for cache in self.__caches:
+        #    cache.update(ops)
+        self.cache_clear()
+
         # reset
         self.__extent = 0
         self.__text = text
         self.error = None
-        self.cache_clear()
 
         # do parsing of self.__text from beginning with the start symbol
         ast = self.funcs[start](0)
+
+        ## try again with a clean cache
+        #if ast is None:
+        #    self.__extent = 0
+        #    self.cache_clear()
+        #    ast = self.funcs[start](0)
 
         if ast is None:
             lines = text.split('\n')
@@ -254,7 +328,6 @@ class PackratParser(Parser):
             else:
                 pre = 0
             self.error.append(f'{lineno:03}:{lines[lineno]}')
-            print(pre, self.__extent)
             self.error.append('^'.rjust(self.__extent-pre + 4, ' '))
             if lineno + 1 < len(lines):
                 self.error.append(f'{lineno+1:03}:{lines[lineno+1]}')
@@ -267,8 +340,8 @@ class PackratParser(Parser):
         return ast
 
     def cache_clear(self):
-        for clear in self.__cache_clears:
-            clear()
+        for cache in self.__caches:
+            cache.cache_clear()
 
     def _trim(self, ast:node) -> node:
         """

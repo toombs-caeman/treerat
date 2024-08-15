@@ -1,4 +1,5 @@
 Exploration of using a directed graph structure to model data dependency and flow through the program.
+
 My intuition is that graph algorithms offer a natural way to approach optimizing programs and introducing novel features
 such as implicit multithreading.
 
