@@ -259,9 +259,15 @@ I have a bunch of ideas for 'micro' languages which would be greatly aided by th
 * [heartbeat scheduler](https://www.andrew.cmu.edu/user/mrainey/heartbeat/heartbeat.html)
     * [spice](https://news.ycombinator.com/item?id=41230344)
 * [austral](https://github.com/austral/austral/)
+* [super tiny compiler](https://github.com/hazbo/the-super-tiny-compiler/blob/master/compiler.go)
+
 # TODO
 * jank around the definition of the fixedpoint and interactions between Argument and OneOrMore,etc.
 * type system
 * grammar registry
 * probably should separate out the visualization & general toys from the specific language I'm trying to make
 * arno
+* https://davidbos.me/posts/some_programming_language_ideas/
+* https://leafo.net/guides/dsl-in-lua.html
+* https://vekatze.github.io/neut/overview.html
+* https://rhombus-lang.org/

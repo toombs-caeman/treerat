@@ -120,11 +120,23 @@ If there are fewer than 32 or 64 rules
 # conclusion
 
 TODO:
+* some ideas from [rust-peg](https://docs.rs/peg/latest/peg/)
+    * inline argument names, rather than  positional args with `%`
+    * line implementation for rules (not sure this is productive)
+    * inline implementation for conditional matching
+    * `expr**delim` and `expr++delim` repeated match with delimiter
+    * `<n,>`, `<,m>`, `<n,m>` match between n and m repetitions
+    * inline expected value to show what should have been there for parsing to proceed further.
+    * explicitly choose when a rule should be cached. Simple rules may be faster to re-match than to do a hash table lookup
+
 * detect mutual left recursion in a grammar and refuse to initialize
 * provide partial parsings and extended error reporting. Use [pika parsing](https://github.com/lukehutch/pikaparser)?
 * could a language define grammars by name/hash, pull them from a repository?
+* binary grammar format, a 'compiled' grammar
+* what can we learn from [how regex expressions are compiled?](https://github.com/codecrafters-io/build-your-own-x?tab=readme-ov-file#build-your-own-regex-engine)
 
 see also:
 * [PEG wikipedia](https://en.wikipedia.org/wiki/Parsing_expression_grammar)
 * [PEG original paper](https://bford.info/pub/lang/peg.pdf)
 * my [inspiration](https://blog.bruce-hill.com/packrat-parsing-from-scratch)
+* [golang regex from scratch](https://rhaeguard.github.io/posts/regex/)

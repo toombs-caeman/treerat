@@ -188,3 +188,4 @@ Really all values are futures, but the primitives allow syncing to futures befor
 * nx.greedy_modularity_communities for generating sparsly connected subgraphs?
 * [end-to-end graph-level optimizing compiler](https://arxiv.org/abs/1802.04799)
 * [implicit threads](https://w3.cs.jmu.edu/kirkpams/OpenCSF/Books/csf/html/ImplicitThreads.html)
+* [graph (ADT)](https://en.wikipedia.org/wiki/Graph_%28abstract_data_type%29#Representations)
