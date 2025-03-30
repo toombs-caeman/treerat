@@ -35,7 +35,7 @@ Only a few of these have actually been completed.
     * optimizer (bytecode -> bytecode) (can be noop)
         * can we statically evaluate some operations?
     * evaluator (bytecode -> action)
-* graph IR
+* graph IR (ASG)
     * compiler (ast -> graph)
     * static analysis (graph -> status) (can be noop)
         * do all bosons have implementations?
@@ -135,8 +135,17 @@ An evaluator can be thought of as embodying the semantics of a language. In slig
 the computations described by a given IR.
 
 Of course, the simplest evaluator is a tree-walk interpreter.
-
 I have yet to build any evaluator of the GIR.
+
+## Omega evaluator
+The ultimate evaluator manages a cluster and abstracts all compute, and io available to it as if it were a single device.
+I should never have to care about where a computation is happening, where the data is stored, or if the code should run on the gpu.
+There is an internal calculus equating power consumption, time and price. If I need something done fast, it should be willing to spend the money to spin up more resources on the commercial cloud. If it doesn't need to be done fast, run only on the private resources. I should never run out of disk space. Keep private storage mostly full, but transparently extend that storage into the cloud. Private devices aren't free to run, they have some nominal power cost. The evaluator should choose the most efficient devices automatically, unless time is prioritized more.
+
+It is automatically distributed and parallel.
+abstraction of compute(cores) and io (storage, network), and scheduling (task urgency, and network latency, compute bandwidth, etc).
+Conceptually, I want all hardware available to me be accessible as a single virtualized, highly parallel computer with a single, highly redundant storage device. The evaluator should work out where the data is, where the compute
+I as the user usually do not care where that code is run. I want it done as quickly as possible
 
 # grammar version
 as a hash of the grammar?
@@ -151,11 +160,14 @@ I have a bunch of ideas for 'micro' languages which would be greatly aided by th
 * a sane shell language, built on an insane foundation
     * using posix `sh` as a runtime
     * a session thats able to seamlessly transfer itself over ssh, even if the shell isn't 'installed' on the new host
+    * nushell >>>> bash | zsh
 * a parsing language
 * a templating language
   * [moustache](https://mustache.github.io/mustache.5.html) templating
   * [jinja](https://jinja.palletsprojects.com)
   * python's [f-string](https://peps.python.org/pep-0498/)
+  * php
+  * string interpolation in general is a highly fragmented space
 
 * data format
   * [TOML](https://github.com/toml-lang/toml)
@@ -271,3 +283,20 @@ I have a bunch of ideas for 'micro' languages which would be greatly aided by th
 * https://leafo.net/guides/dsl-in-lua.html
 * https://vekatze.github.io/neut/overview.html
 * https://rhombus-lang.org/
+* [interaction nets](https://en.wikipedia.org/wiki/Interaction_nets)
+    * [vine](https://vine.dev/docs)
+
+* write landing pages for two imaginary languages
+    * protolang/treerat - the language for prototyping languages
+    * arno - the automatically parallel, hardware accelerated, and distributed language
+* arno - an automatically parallel and distributed bytecode vm
+* protolang - a framework for quickly prototyping new programming languages
+    * packrat parse to tree, tree walk interpreter stub for a number of base languages
+    * repository of language definitions (content addressable)
+    * repository of backends
+* [query compilers](https://www.scattered-thoughts.net/writing/the-missing-tier-for-query-compilers/)
+* [graphit](https://graphit-lang.org/language#the-graphit-programming-language)
+* https://peggyjs.org/online.html
+* https://www.scallop-lang.org/
+
+[LSP](https://microsoft.github.io/language-server-protocol/overviews/lsp/overview/)

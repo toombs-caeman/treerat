@@ -28,6 +28,12 @@ put in a lot of time recently.
 18.5-20: LDT and reading CI
 20.5-23.5: defining specific traits and types for a core of toylang
 
+# 2025-03-22
+12-14.5: write skeleton, text for blog/vis
+
+# 2025-03-29
+20-21: consider how to extend fixedpoint to have a tokenizer pass, implement in golang?
+
 # todo
 * optim: make sure that trim isn't doing extraneous work
 * optim: clean up parser internals to make them easier to reason about and port
