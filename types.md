@@ -82,3 +82,4 @@ https://en.wikipedia.org/wiki/Effect_system
 https://en.wikipedia.org/wiki/Type_inference
 https://www.reddit.com/r/ProgrammingLanguages/comments/q8j0f1/implementing_traitsinterfacestypeclasses_in_a/
 [scheme lexical scope](https://docs.scheme.org/schintro/schintro_53.html)
+[typechecker zoo](https://sdiehl.github.io/typechecker-zoo/)
