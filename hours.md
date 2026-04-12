@@ -32,7 +32,7 @@ put in a lot of time recently.
 12-14.5: write skeleton, text for blog/vis
 
 # 2025-03-29
-20-21: consider how to extend fixedpoint to have a tokenizer pass, implement in golang?
+20-21: consider how to extend fixedpoint to have a tokenizer pass, implement in golang? extending scope of protolang to include generating LSP and DAP
 
 # todo
 * optim: make sure that trim isn't doing extraneous work

@@ -162,6 +162,8 @@ I have a bunch of ideas for 'micro' languages which would be greatly aided by th
     * a session thats able to seamlessly transfer itself over ssh, even if the shell isn't 'installed' on the new host
     * nushell >>>> bash | zsh
 * a parsing language
+    * regex
+    * grammars
 * a templating language
   * [moustache](https://mustache.github.io/mustache.5.html) templating
   * [jinja](https://jinja.palletsprojects.com)
@@ -234,6 +236,7 @@ I have a bunch of ideas for 'micro' languages which would be greatly aided by th
     * [gforth](https://en.wikipedia.org/wiki/Gforth)
     * fig-Forth
     * F83
+    * [toombsforth](https://github.com/toombs-caeman/forth)
 * [programming language design](https://toombs-caeman.github.io/pl)
 * [scrapscript](https://scrapscript.org/)
     * content addressable code
@@ -274,6 +277,8 @@ I have a bunch of ideas for 'micro' languages which would be greatly aided by th
 * [super tiny compiler](https://github.com/hazbo/the-super-tiny-compiler/blob/master/compiler.go)
 
 # TODO
+* instrumentation around visualization
+* build a visualizer TUI [prompt-toolkit](https://python-prompt-toolkit.readthedocs.io/en/3.0.52/pages/full_screen_apps.html)
 * jank around the definition of the fixedpoint and interactions between Argument and OneOrMore,etc.
 * type system
 * grammar registry
@@ -285,6 +290,8 @@ I have a bunch of ideas for 'micro' languages which would be greatly aided by th
 * https://rhombus-lang.org/
 * [interaction nets](https://en.wikipedia.org/wiki/Interaction_nets)
     * [vine](https://vine.dev/docs)
+* https://odin-lang.org/
+* https://jaiprogramming.com/
 
 * write landing pages for two imaginary languages
     * protolang/treerat - the language for prototyping languages
@@ -299,4 +306,11 @@ I have a bunch of ideas for 'micro' languages which would be greatly aided by th
 * https://peggyjs.org/online.html
 * https://www.scallop-lang.org/
 
-[LSP](https://microsoft.github.io/language-server-protocol/overviews/lsp/overview/)
+* [LSP](https://microsoft.github.io/language-server-protocol/overviews/lsp/overview/)
+    * [lsp tutorial](https://prefab.cloud/blog/lsp-language-server-from-zero-to-completion/)
+[bruijn language](https://text.marvinborner.de/2023-04-06-01.html)
+[io language](https://iolanguage.org/about.html)
+
+* [economics of programming languages](https://youtu.be/XZ3w_jec1v8)
+    * the economic incentives of the language designer affect how they make design decisions
+    * this is true if the 'designer' is a corporation, a small independant team, or an individual.

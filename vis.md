@@ -29,6 +29,7 @@ For example in math, the expression `1 + 2` is meaningful, but `1 + * /` is not.
 
 The fact that the grammar defines what "might be meaningful" and "what definitely isn't meaningful" might seem strange, but it defining this kind of interface allows for grammars to be used very efficiently.
 
+
 ## example grammar
 ```grammar
 stmt    : print / assign
