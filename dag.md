@@ -1,3 +1,5 @@
+NOTE: so it turns out that this great original idea I had is called 'sea of nodes', and has been written about longer than I've been alive. Figures.
+
 Exploration of using a directed graph structure to model data dependency and flow through the program.
 
 My intuition is that graph algorithms offer a natural way to approach optimizing programs and introducing novel features
@@ -189,3 +191,10 @@ Really all values are futures, but the primitives allow syncing to futures befor
 * [end-to-end graph-level optimizing compiler](https://arxiv.org/abs/1802.04799)
 * [implicit threads](https://w3.cs.jmu.edu/kirkpams/OpenCSF/Books/csf/html/ImplicitThreads.html)
 * [graph (ADT)](https://en.wikipedia.org/wiki/Graph_%28abstract_data_type%29#Representations)
+
+# sea of nodes
+* great talk [Parsing without ASTs and Optimizing with Sea of Nodes](https://www.youtube.com/watch?v=NxiKlnUtyio)
+* [sea of nodes tutorial](https://github.com/SeaOfNodes)
+* [sea of nodes](https://en.wikipedia.org/wiki/Sea_of_nodes)
+* global code motion
+* branching is handled in the graph using 'projections', 'regions' and 'phi'

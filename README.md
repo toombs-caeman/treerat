@@ -72,6 +72,18 @@ TODO:
     * use javascript to allow controls: run, pause, reverse, step
     * with a wasm backend for the language components, you could actually just develop a new language server-side in the browser
     * [viz.js](https://github.com/mdaines/viz-js)
+* an assembler
+    * arm/x86 assembler
+    * allow cross compiling
+    * write a forth in assembly
+    * write linter / 
+* bootstrap
+    1. existing assembler (armclang)
+    2. assembler in assembly (fixed point)
+    3. forth in assembly
+    4. forth in forth (fixed point)
+    5. 
+* assembler
 
 # Parser
 
