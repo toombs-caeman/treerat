@@ -1,458 +1,557 @@
-from functools import cache, wraps
+import itertools
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from functools import cache, cached_property
+from collections import defaultdict
+from typing import Callable, Generator, Hashable, Self
+from base import Parser, ParseError
+import graphlib
+import heapq
 
-# TODO error recovery marker in fixedpoint?
-__all__ = ['node', 'Parser', 'ParseError']
+# see also pika parsing paper: https://arxiv.org/pdf/2005.06444
+# comments containing '§' are referrencing sections of this paper
 
-class ParseError(Exception):
-    """raised if parser fails on input while in strict mode"""
+"""
+TODO:
+* error recovery
+* can we implement a relatively efficient regex parser
+* exception types
+    * parse error
+* can we avoid explicitly flagging precedence and associativity rules?
+* can we avoid failure on mutual left recursion?
+* incremental parsing
+    * rather than indexing the cache on the absolute index of a character,
+    * store the input as a rope, then index on a node in the rope
+    * when an edit occurs, invalidate and reparse only spans that cross the edit.
+"""
+__all__ = [
+    'PikaParser', # type
+    'PikaMetaParser', # isinstance(PikaParser)
+    'generateParser', # def (grammar:str) -> PikaParser
+    'ParseError', # Exception
+]
 
-class T:
-    """To mitigate typos, define all the strings used internally as identifiers"""
+type memo = dict[tuple[int, ParseClause], ParseNode]
+# BASE TYPES
+@dataclass
+class ParseNode:
+    # debug
+    clause: ParseClause
+    # span
+    content:tuple[ParseNode, ...]
+    start: int
+    stop: int
+    label: str = ''
+    def clean(self) -> ParseNode | None:
+        """produce a simplified tree, where every node is labelled."""
+        pass
+    def cast[T:type](self, node_cast:dict[str, T]) -> T:
+        return node_cast[self.label](*(x.cast(node_cast) for x in self.content))
+    def __str__(self, src:str|None=None):
+        base = f"{self.label}[{self.start}:{self.stop}]"
+        if src is None:
+            return base
+        return f"{base} {src[self.start:self.stop]!r}"
+    def format(self,src:str|None=None, max_width:int=80, prefix:str='', next_p=''):
+        out = [f"{prefix}{next_p}{self.__str__(src)}"]
+        match next_p:
+            case '├':
+                prefix += '│'
+            case '└':
+                prefix += ' '
+        if self.content:
+            for c in self.content[:-1]:
+                out.append(c.format(src, max_width, prefix, '├'))
+            out.append(self.content[-1].format(src, max_width, prefix, '└'))
 
-    # input node kinds
-    choice = 'Choice'
-    zeroorone = 'ZeroOrOne'
-    zeroormore = 'ZeroOrMore'
-    oneormore = 'OneOrMore'
-    lookahead = 'Lookahead'
-    notlookahead = 'NotLookahead'
-    index = 'Index'
-    definition = 'Definition'
-    dot = 'Dot'
+        chars = '│├└ '
+        return '\n'.join(out)
 
-    # input/internal node kinds
-    sequence = 'Sequence'
-    label = 'Label'
-    string = 'String'
-    node = 'Node'
-    argument = 'Argument'
+finalize = [lambda s=None,v=None: False, lambda s=None,v=None: True]
 
-    # non-terminal symbols in the fixedpoint grammar definition
-    parseexpr = 'ParseExpr'
-    primary = 'Primary'
-    spacing = 'Spacing'
-    comment = 'Comment'
-    leftarrow = 'LEFTARROW'
-    slash = 'SLASH'
-    arg = 'ARG'
-    amp = 'AMP'
-    bang = 'BANG'
-    question = 'QUESTION'
-    star = 'STAR'
-    plus = 'PLUS'
-    OPEN = 'OPEN'
-    close = 'CLOSE'
-    space = 'SPACE'
-    eol = 'EOL'
-    eof = 'EOF'
-    char = 'Char'
-    charclass = 'CharClass'
-    # default start symbol
-    start = 'start'
-class node:
-    """generic tree node with some metadata"""
-    __slots__ = ['kind', 'start', 'stop', 'children']
-    def __init__(self, kind, *children, start:int=..., stop:int=...):
-        self.kind = kind
-        self.start = start
-        self.stop = stop
-        self.children = children
-    def __iter__(self):
-        return iter(self.children)
-    def __getitem__(self, __key):
-        return self.children[__key]
-    def __hash__(self):
-        return hash((self.kind, self.children))
-    def __eq__(self, __o):
-        return isinstance(__o, node) and self.kind == __o.kind and self.children == __o.children
-    def __repr__(self):
-        return f'{type(self).__name__}{(self.kind, *self.children)!r}'
+class ParseClause(ABC):
+    label: str = ''
+    spec = None
+    @abstractmethod
+    def match(self, srcIdx:int, src: str, memo:memo) -> ParseNode | None:
+        """either produce a node or fail to match."""
 
+    def __hash__(self) -> int:
+        return hash(str(self))
 
-class Parser:
-    """
-    A generic packrat parser.
+    def __eq__(self, value):
+        return type(self) == type(value) and self.spec == value.spec
 
-    The parser can be initialized with a language specification,
-    given as an abstract syntax tree containing Definition statements,
-    a dictionary of symbols to the corresponding syntax tree, or a string.
-    If no specification is given, the "fixedpoint" grammar is used.
+    @abstractmethod
+    def mustConsumeInput(self, visited=None) -> bool:
+        """Return True iff this clause must consume at least one character to match."""
 
-    If a language specification is given as a string, it will be parsed according to the fixedpoint grammar
-    and the resuting syntax tree will be used to initialize the parser as normal.
+    @abstractmethod
+    def couldStartWith(self, child:ParseClause) -> bool:
+        """Return True iff, a match of this clause could start at the same position as a match of the child clause."""
 
-    The fixedpoint is named as such because parsing the fixedpoint grammar with a fixedpoint parser
-    produces a syntax tree which can directly initialize an identical parser.
+    @abstractmethod
+    def withLabel(self, label:str) -> Self:
+        """return a copy of this clause with the given label"""
+    def __str__(self) -> str:
+        return self.label + ':' if self.label else ''
 
-    The fixedpoint language itself is a small extension of the Parsing Expression Grammar (PEG), which adds the '%' and ':' operator.
-    '%' allows the language to specify which symbols to retain in the output, and which should generate nodes in the resulting abstract syntax tree.
-    ':' allows more convenient construction of operator precedence but is only syntactic sugar, strictly speaking.
+class Terminal(ParseClause):
+    def couldStartWith(self, child: ParseClause) -> bool:
+        return self == child
 
-    For example take the following grammar, which recognizes one or more math expressions separated with semicolons:
-    %start <- %Expr (';' %Expr )* ';'? !.
-    Expr   <- (%Add / %Sub) / (%Mul / %Div) / %Float / %Int / '(' %Expr ')'
-    %Add   <- %Expr:1 PLUS %Expr
-    %Sub   <- %Expr:1 MINUS %Expr
-    %Mul   <- %Expr:2 (STAR %Expr:1)+
-    %Div   <- %Expr:2 (SLASH %Expr:1)+
-    %Float <- %(NUM '.' NUM) SPACE
-    %Int   <- %NUM SPACE
-    NUM    <- %[0-9]+
-    OPEN   <- '(' SPACE
-    CLOSE  <- ')' SPACE
-    PLUS   <- '+' SPACE
-    MINUS  <- '-' SPACE
-    STAR   <- '*' SPACE
-    SLASH  <- '/' SPACE
-    SPACE  <- ' '*
+class String(Terminal):
+    def __init__(self, spec:str, *, label='') -> None:
+        self.spec = spec
+        self.label = label
+    def match(self, srcIdx: int, src: str, memo: memo) -> ParseNode | None:
+        if not src.startswith(self.spec, srcIdx):
+            return None
+        return ParseNode(clause=self, content=(), start=srcIdx, stop=srcIdx+len(self.spec), label=self.label)
+    def mustConsumeInput(self, visited=None) -> bool:
+        self.mustConsumeInput = finalize[bool(self.spec)]
+        return self.mustConsumeInput()
+    def withLabel(self, label: str) -> Self:
+        return type(self)(self.spec, label=label)
+    def __str__(self) -> str:
+        return super().__str__() + repr(self.spec)
 
-    On the left hand side of a definition, '%' denotes that the symbol generates a node in the output.
-    Non-terminal symbol definitions which lack a '%' are used only as labels for use in other definitions,
-    and do not represent nodes in the output.
-    As we can see, the output of parsing this grammar may contain nodes of kind start, Add, Sub, Mul, Div, Float, and Int.
+class CClass(Terminal):
+    def __init__(self, *spec:str, label='') -> None:
+        self.inv = spec[0] == '^'
+        self.spec = spec[1:] if self.inv else spec
+        self.label = label
+    def match(self, srcIdx: int, src: str, memo: memo) -> ParseNode | None:
+        if srcIdx < len(src) and self.inv ^ any(
+            r[0] <= src[srcIdx] <= r[-1] for r in self.spec
+        ):
+            return ParseNode(
+                clause=self,
+                content=(),
+                start=srcIdx,
+                stop=srcIdx+1,
+                label=self.label
+            )
+        return None
+    mustConsumeInput = finalize[True]
+    def withLabel(self, label: str) -> Self:
+        return type(self)(*self.spec, label=label)
+    def __str__(self) -> str:
+        inner = ''.join(self.spec)
+        inv = '^' if self.inv else ''
+        return f'{super().__str__()}[{inv}{inner}]'
 
-    On the right hand side '%' designates that a symbol should be retained as an argument in the output.
-    In the definition of Add, there are two arguments marked with '%' which must always match to successfully match Add,
-    so the output node Add will always have two children. PLUS must also match in the process of matching Add,
-    but the contents of PLUS are always discarded because it was not marked with '%' (its contents are empty anyway).
-    In the definition of Div, the second argument may be repeated one or more times because the '+' operator encloses '%',
-    therefore Div nodes have two or more children.
-    Expr only ever has one arguement because, while '%' is used a few times, only one '%' expression will match at a time.
-    Because Expr does not designate a node, the matched argument will be substituted directly in definitions where Expr
-    is referenced, rather than encapsulating the argument itself.
+class Dot(Terminal):
+    def __init__(self, *, label='') -> None:
+        self.label = label
+    def match(self, srcIdx: int, src: str, memo: memo) -> ParseNode | None:
+        if srcIdx < len(src):
+            return ParseNode(clause=self, content=(), start=srcIdx, stop=srcIdx+1, label=self.label)
+        return None
+    mustConsumeInput = finalize[True]
+    def withLabel(self, label: str) -> Self:
+        return type(self)(label=label)
+    def __str__(self) -> str:
+        return super().__str__() + '.'
 
-    ':' refers to an implicit symbol based on an explicit definition. 'Expr:1' means to take every term of Expr except the first.
-    In this case it is equivalent to the following definition:
-    Expr:1 <- (%Mul / %Div) / %Float / %Int / '(' %Expr ')'
-    The purpose of ':' is to make operator precedence easier to express.
-    Some choices in Expr are grouped, even though an ungrouped choice is locally equivalent, to express that those
-    operators have equal precedence.
+class NonTerminal(ParseClause):
+    spec:tuple[ParseClause, ...]
+    def __init__(self, *spec:ParseClause, label='') -> None:
+        self.spec = spec
+        self.label = label
+    def withLabel(self, label: str) -> Self:
+        return type(self)(*self.spec, label=label)
 
+# CORE PEG OPERATORS
+class Seq(NonTerminal):
+    """match a sequence of ParseClauses"""
+    def couldStartWith(self, child: ParseClause):
+        for n in self.spec:
+            if n == child:
+                return True
+            if n.mustConsumeInput():
+                return n.couldStartWith(child)
+        return False
+    def mustConsumeInput(self, visited=None) -> bool:
+        if visited is None:
+            visited = set()
+        # return any(n.mustConsumeInput() for n in self.spec)
+        for n in self.spec:
+            if n not in visited:
+                visited.add(n)
+                if n.mustConsumeInput(visited):
+                    self.mustConsumeInput = finalize[True]
+                    return self.mustConsumeInput()
+        self.mustConsumeInput = finalize[False]
+        return self.mustConsumeInput()
 
-    see also:
-        https://en.wikipedia.org/wiki/Parsing_expression_grammar
-        https://bford.info/pub/lang/peg.pdf
-
-    TODO:
-        detect mutual left recursion in a grammar and refuse to initialize
-        provide partial parsings and extended error reporting
-    """
-    def __init__(self, __from=None, /, **labels:node):
-        # rectify the incoming specification for internal use
-        if __from is None and not labels:
-            labels = fixedpoint.copy()
-        else:
-            match __from:
-                case str():
-                    __from = ast2labels(Parser()(__from))
-                case dict():
-                    __from = __from
-                case node():
-                    __from = ast2labels(__from)
-                case _:
-                    __from = {}
-            __from.update(labels)
-            labels = __from
-
-        # resolve labels into cache-friendly function applications
-        self.__cache_clears = []
-        index = {}
-
-        @cache
-        def resolve(kind, *args):
-            if kind == T.index:
-                # create new label based on index into existing label
-                name = args[0].name
-                offset = args[1]
-                newname = f'{name}:{offset}'
-                index[newname] = node(labels[name].kind, *labels[name][int(offset):])
-                # turn index into plain label
-                kind = T.label
-                args = (newname,)
-            method = getattr(self, kind)
-
-            @cache
-            @wraps(method)
-            def call(idx:int) -> node|None:
-                if (n:=method(idx, *args)):
-                    self.__extent = max(self.__extent, n.stop)
-                return n
-
-            self.__cache_clears.append(call.cache_clear)
-            if kind == T.label:
-                # make sure this is accessible later if there's an index into this label
-                call.name = args[0]
-            return call
-
-        
-        # walk the tree bottom up, applying term() to terminal values and func() to flattened nodes (non-terminals)
-        def walk(n:node, func, term=lambda x:x):
-            return func(n.kind, *(walk(c, func, term) if isinstance(c, node) else term(c) for c in n.children))
-        self.labels = {name:walk(n, resolve) for name, n in labels.items()}
-        # apply the new labels generated by indices in previous walk of resolve()
-        # all indices will be resolved in a single pass
-        self.labels.update({name:walk(n, resolve) for name,n in index.items()})
-
-        self.__extent = 0
-        self.__text = ''
-        self.error = None
-
-    def __call__(self, text:str, start='start', *, trim=True, strict=False) -> node|None:
-        """
-        Attempt to parse text as the given start symbol.
-
-        Parsing always starts at the beginning of the text and tries to match the given start symbol.
-        If parsing fails Parser.error is set, then ParseError is raised if strict otherwise None is returned.
-        The parsed tree does not necessarily span the whole input text unless that is specified by the grammar.
-
-        If trim is False, return the internal parse tree, rather than the output tree.
-        The usual output can be obtained by passing the tree to Parser._trim()
-        This is probably only useful for testing the parser.
-        """
-        # reset
-        self.__text = text
-        self.error = None
-        self.cache_clear()
-
-        # do parsing of self.__text from beginning with the start symbol
-        ast = self.labels[start](0)
-
-        if ast is None:
-            lines = text.split('\n')
-            lineno = text.count('\n', 0, self.__extent)
-            self.error = []
-            if lineno > 0:
-                self.error.append(f'{lineno-1:03}:{lines[lineno-1]}')
-                pre = text.rfind('\n', 0, self.__extent)
-            else:
-                pre = 0
-            self.error.append(f'{lineno:03}:{lines[lineno]}')
-            self.error.append('^'.rjust(self.__extent-pre + 4, ' '))
-            if lineno + 1 < len(lines):
-                self.error.append(f'{lineno+1:03}:{lines[lineno+1]}')
-            self.error.append(f'ParseError: failed after line={lineno} char={pre}')
-            if strict:
-                raise ParseError('\n'.join(self.error))
-        else:
-            if trim:
-                return self._trim(ast)
-        return ast
-
-    def cache_clear(self):
-        for clear in self.__cache_clears:
-            clear()
-
-    def _trim(self, ast:node) -> node:
-        """
-        Convert internal parser representation into the output syntax tree.
-
-        The untrimmed generated ast contains 5 kinds (Node, Argument, Label, Sequence, String) which are specific to the parser.
-
-        Argument specifies that a subtree should be retained in the output as an argument the enclosing Node or Label.
-
-        Node specifies a node in the output syntax tree.
-        The first child is a string that specifies the output node's kind.
-
-        Label indicates that this subtree was generated by a non-terminal symbol that does not represent a Node.
-        Arguments of Labels are retained by the enclosing Node only if the Label is also marked with an Argument.
-
-        Sequence represents a sequence of nodes. In general these are flattened in the output.
-
-        The kinds of the trimmed ast are in the set {n[0] for n in walk(ast) if n.kind = 'Node'}
-        The arguments of each output node are a flat list of the 
-
-        """
-        match ast.kind:
-            case T.node:
-                return self.__node(ast)
-            case T.argument:
-                return self._trim(ast[0])
-            case T.string:
-                return self.__unescape(ast[0])
-            case T.label:
-                return self.__label(ast)
-            case T.sequence:
-                args = map(self._trim, ast)
-                # flatten sequence
-                args = tuple(v for a in args for v in (a if isinstance(a, tuple) else (a,)))
-                # check if empty
-                if not args:
-                    return ()
-                # merge strings
-                if all(isinstance(a, str) for a in args):
-                    return self.__unescape(''.join(args))
-                return args
-            case _:
-                raise ValueError
-
-    def __node(self, ast:node, memo=None):
-        if memo is None:
-            memo = []
-            newkind, body = ast
-            self.__node(body, memo)
-            return node(newkind, *memo, start=ast.start, stop=ast.stop)
-        match ast.kind:
-            case T.argument:
-                memo.append(self._trim(ast))
-            case T.sequence:
-                for a in ast:
-                    self.__node(a, memo)
-
-    def __label(self, ast:node, memo=None):
-        if memo is None:
-            memo = []
-            self.__label(ast[1], memo)
-            match len(memo):
-                case 0:
-                    return self._trim(ast[1])
-                case 1:
-                    return memo[0]
-                case _:
-                    return tuple(memo)
-
-        match ast.kind:
-            case T.argument:
-                memo.append(self._trim(ast))
-            case T.sequence:
-                for a in ast:
-                    self.__node(a, memo)
-
-    def __unescape(self, s, __map={'\\n':'\n', '\\t':'\t', '\\r':'\r', '\\\\':'\\'}):
-        for k,v in __map.items():
-            s = s.replace(k,v)
-        return s
-
-    def Dot(self, idx):
-        if idx < len(self.__text):
-            return node(T.string, self.__text[idx], start=idx, stop=idx+1)
-
-    def String(self, idx, literal):
-        if self.__text.startswith(literal, idx):
-            return node(T.string, literal, start=idx, stop=idx+len(literal))
-
-    def CharClass(self, idx, *chars):
-        if idx >= len(self.__text):
-            return
-        for crange in chars:
-            if crange[0] <= self.__text[idx] <= crange[-1]:
-                return node(T.string, self.__text[idx], start=idx, stop=idx+1)
-
-    def Choice(self, idx, *exprs) -> node|None:
-        for expr in exprs:
-            if (x:=expr(idx)) is not None:
-                return x
-
-    def Sequence(self, idx, *exprs):
-        c = []
-        for expr in exprs:
-            if (x:= expr(idx)) is None:
+    def match(self, srcIdx: int, src: str, memo: memo) -> ParseNode | None:
+        content = []
+        i = srcIdx
+        for child in self.spec:
+            while isinstance(child, RuleRef):
+                child = child.rule
+            n = memo.get((i, child))
+            if n is None:
                 return None
-            idx = x.stop
-            c.append(x)
-        return node(T.sequence, *c, start=c[0].start, stop=c[-1].stop)
+            content.append(n)
+            i = n.stop
 
-    def OneOrMore(self, idx, expr):
-        c = [expr(idx)]
-        if c[0] is None:
-            return
-        while (x:=expr(c[-1].stop)) is not None:
-            c.append(x)
-        return node(T.sequence, *c, start=c[0].start, stop=c[-1].stop)
+        return ParseNode(clause=self, content=tuple(content), start=srcIdx, stop=i, label=self.label)
+    def __str__(self) -> str:
+        return super().__str__() + f"({' '.join(str(s) for s in self.spec)})"
 
-    def ZeroOrMore(self, idx, expr):
-        c = []
-        while (x:=expr(idx)) is not None:
-            c.append(x)
-            idx = x.stop
-        if c:
-            return node(T.sequence, *c, start=c[0].start, stop=c[-1].stop)
-        return node(T.sequence, start=idx, stop=idx)
+class First(NonTerminal):
+    """match the first valid clause in a list of ParseClauses"""
+    def couldStartWith(self, child: ParseClause):
+        return any(n.couldStartWith(child) for n in self.spec)
+    def mustConsumeInput(self, visited=None) -> bool:
+        if visited is None:
+            visited = set()
+        # return all(n.mustConsumeInput() for n in self.spec)
+        for n in self.spec:
+            if n not in visited:
+                if not n.mustConsumeInput(visited):
+                    self.mustConsumeInput = finalize[False]
+                    return self.mustConsumeInput()
 
-    def ZeroOrOne(self, idx, expr):
-        if (x:=expr(idx)) is None:
-            return node(T.sequence, start=idx, stop=idx)
-        return x
+        self.mustConsumeInput = finalize[True]
+        return self.mustConsumeInput()
 
-    def Lookahead(self, idx, expr):
-        if expr(idx) is not None:
-            return node(T.sequence, start=idx, stop=idx)
+    def match(self, srcIdx: int, src: str, memo: memo) -> ParseNode | None:
+        for child in self.spec:
+            while isinstance(child, RuleRef):
+                child = child.rule
+            n = memo.get((srcIdx, child))
+            if n is not None:
+                return n
+        return None
+    def __str__(self) -> str:
+        return super().__str__() + f"({' / '.join(str(s) for s in self.spec)})"
 
-    def NotLookahead(self, idx, expr):
-        if expr(idx) is None:
-            return node(T.sequence, start=idx, stop=idx)
+class ZeroPlus(Seq):
+    """greedily repeat a ParseClause."""
+    mustConsumeInput = finalize[False]
+    def match(self, srcIdx: int, src: str, memo: memo) -> ParseNode | None:
+        content = []
+        i = srcIdx
+        while True:
+            rcontent = []
+            for child in self.spec:
+                while isinstance(child, RuleRef):
+                    child = child.rule
+                n = memo.get((i, child))
+                if n is None:
+                    return ParseNode(clause=self, content=tuple(content), start=srcIdx, stop=i, label=self.label)
+                rcontent.append(n)
+                i = n.stop
+            content.extend(rcontent)
+    def __str__(self) -> str:
+        return super().__str__() + '*'
 
-    def Node(self, idx, name, expr):
-        if (x:=expr(idx)):
-            return node(T.node, name, x, start=x.start, stop=x.stop)
+class Not(Seq):
+    """matches if the subclause does not match. Always consumes zero characters."""
+    mustConsumeInput = finalize[False]
+    def match(self, srcIdx: int, src: str, memo: memo) -> ParseNode | None:
+        n = super().match(srcIdx, src, memo)
+        if n is None:
+            return ParseNode(clause=self, content=(), start=srcIdx, stop=srcIdx, label=self.label)
+        return None
+    def __str__(self) -> str:
+        label = self.label + ':' if self.label else ''
+        return f"{label}!({' '.join(str(s) for s in self.spec)})"
 
-    def Argument(self, idx, expr):
-        if (x:=expr(idx)):
-            return node(T.argument, x, start=x.start, stop=x.stop)
 
-    def Label(self, idx, name):
-        if (x:=self.labels[name](idx)):
-            return node(T.label, name, x, start=x.start, stop=x.stop)
+# DERIVED PEG OPERATORS
+def Follows(*spec, label=''):
+    return Not(Not(*spec), label=label)
 
-    def Index(self, idx, name, offset):
-        # this should be resolved into calls to self.Label during initialization
-        raise NotImplementedError
+def Optional(*spec, label=''):
+    return First(Seq(*spec), e, label=label)
 
-def ast2labels(ast:node) -> dict[str, node]:
+def OnePlus(*spec, label=''):
+    return Seq(*spec, ZeroPlus(*spec), label=label)
+
+# DERIVED PEG TERMINALS
+dot = CClass('^') # matches any one character
+e = String('') # matches the empty string
+
+
+
+
+class PikaParser:
     """
-    Used by parser internally to convert ast into labels.
-
-    Technically an Evaluator since it is Callable[node]
     """
-    new_labels = {}
-    for n in ast[0]:
-        if n.kind == T.definition:
-            match n[0].kind:
-                case T.node:
-                    name = n[0][0][0]
-                    new_labels[name] = node(T.node, name, n[1])
-                case T.label:
-                    name = n[0][0]
-                    new_labels[name] = n[1]
+    def __init__(self, startNode:ParseClause | grammar):
+        if isinstance(startNode, grammar):
+            startNode = startNode.rules[startNode.startRule]
+        while isinstance(startNode, RuleRef):
+            startNode = startNode.rule # dereference
+        # construct clause graph.
+        # this SHOULD deduplicate nodes by hash
+        self.alwaysEval: set[ParseClause] = set()
+        graph = defaultdict(set) # dict[child, iterable[parent]]
+        # topo sort for priority §2.5
+        counter = itertools.count()
+        # §2.5 deduplicated post order traversal, starting at the starting rule,
+        # breaking cycles where a node is visited again
+        self.clauseIdx: dict[ParseClause, int] = {}
+        def walk(n:ParseClause):
+            if n in self.clauseIdx:
+                # we've already visited this node.
+                return
+            # record that we've visited this node
+            self.clauseIdx[n] = 0
+            if not n.mustConsumeInput():
+                self.alwaysEval.add(n)
+            #print(f"walk {str(n)}")
+            match n:
+                case Terminal():
+                    # these must always be evaluated because
+                    # there's no better way to know if the rule should be triggered
+                    # than to just match it.
+                    self.alwaysEval.add(n)
+                case NonTerminal():
+                    for child in n.spec:
+                        while isinstance(child, RuleRef):
+                            child = child.rule # dereference
+                        graph[child].add(n)
+                        walk(child)
                 case _:
-                    print(f'unrecognized node {n[0].kind!r} in definition')
-        else:
-            print(f'unrecognized statement {n[0].kind!r} in grammar')
-    return new_labels
+                    raise Exception(type(n))
+            # update index in post-order
+            self.clauseIdx[n] = next(counter)
+        # by only walking the start node, rather than every rule in the grammar,
+        # we automatically trim the grammar to reachable nodes
+        walk(startNode)
 
-# the fixed point grammar, as a dictionary
-fixedpoint = {
-            'start': node('Node', 'start', node('Sequence', node('Label', 'Spacing'), node('Argument', node('OneOrMore', node('Label', 'Definition'))), node('Label', 'EOF'))),
-            'Definition': node('Node', 'Definition', node('Sequence', node('Argument', node('Choice', node('Label', 'Label'), node('Label', 'Node'))), node('Label', 'LEFTARROW'), node('Argument', node('Label', 'ParseExpr')))),
-            'ParseExpr': node('Choice', node('Argument', node('Label', 'Choice')), node('Argument', node('Label', 'Sequence')), node('Choice', node('Argument', node('Label', 'Lookahead')), node('Argument', node('Label', 'NotLookahead')), node('Argument', node('Label', 'Argument'))), node('Choice', node('Argument', node('Label', 'ZeroOrOne')), node('Argument', node('Label', 'ZeroOrMore')), node('Argument', node('Label', 'OneOrMore'))), node('Argument', node('Label', 'Primary'))),
-            'Choice': node('Node', 'Choice', node('Sequence', node('Argument', node('Index', node('Label', 'ParseExpr'), '1')), node('OneOrMore', node('Sequence', node('Label', 'SLASH'), node('Argument', node('Index', node('Label', 'ParseExpr'), '1')))))),
-            'Sequence': node('Node', 'Sequence', node('Sequence', node('Argument', node('Index', node('Label', 'ParseExpr'), '2')), node('OneOrMore', node('Argument', node('Index', node('Label', 'ParseExpr'), '2'))))),
-            'Lookahead': node('Node', 'Lookahead', node('Sequence', node('Label', 'AMP'), node('Argument', node('Index', node('Label', 'ParseExpr'), '3')))),
-            'NotLookahead': node('Node', 'NotLookahead', node('Sequence', node('Label', 'BANG'), node('Argument', node('Index', node('Label', 'ParseExpr'), '3')))),
-            'Argument': node('Node', 'Argument', node('Sequence', node('Label', 'ARG'), node('Argument', node('Index', node('Label', 'ParseExpr'), '3')))),
-            'ZeroOrOne': node('Node', 'ZeroOrOne', node('Sequence', node('Argument', node('Index', node('Label', 'ParseExpr'), '4')), node('Label', 'QUESTION'))),
-            'ZeroOrMore': node('Node', 'ZeroOrMore', node('Sequence', node('Argument', node('Index', node('Label', 'ParseExpr'), '4')), node('Label', 'STAR'))),
-            'OneOrMore': node('Node', 'OneOrMore', node('Sequence', node('Argument', node('Index', node('Label', 'ParseExpr'), '4')), node('Label', 'PLUS'))),
-            'Primary': node('Choice', node('Sequence', node('Label', 'OPEN'), node('Argument', node('Label', 'ParseExpr')), node('Label', 'CLOSE')), node('Argument', node('Label', 'Index')), node('Sequence', node('Argument', node('Label', 'Label')), node('NotLookahead', node('Label', 'LEFTARROW'))), node('Argument', node('Label', 'String')), node('Argument', node('Label', 'CharClass')), node('Argument', node('Label', 'Dot'))),
-            'Node': node('Node', 'Node', node('Sequence', node('Label', 'ARG'), node('Argument', node('Label', 'Label')))),
-            'Index': node('Node', 'Index', node('Sequence', node('Argument', node('Label', 'Label')), node('String', ':'), node('Argument', node('OneOrMore', node('CharClass', '0-9'))), node('Label', 'Spacing'))),
-            'Label': node('Node', 'Label', node('Sequence', node('Argument', node('Sequence', node('CharClass', 'a-z', 'A-Z', '_'), node('ZeroOrMore', node('CharClass', 'a-z', 'A-Z', '_', '0-9')))), node('Label', 'Spacing'))),
-            'Spacing': node('ZeroOrMore', node('Choice', node('Label', 'SPACE'), node('Label', 'Comment'))),
-            'Comment': node('Sequence', node('String', '#'), node('ZeroOrMore', node('Sequence', node('NotLookahead', node('Label', 'EOL')), node('Dot',))), node('Choice', node('Label', 'EOL'), node('Label', 'EOF'))),
-            'LEFTARROW': node('Sequence', node('String', '<-'), node('Label', 'Spacing')),
-            'SLASH': node('Sequence', node('String', '/'), node('Label', 'Spacing')),
-            'ARG': node('Sequence', node('String', '%'), node('Label', 'Spacing')),
-            'AMP': node('Sequence', node('String', '&'), node('Label', 'Spacing')),
-            'BANG': node('Sequence', node('String', '!'), node('Label', 'Spacing')),
-            'QUESTION': node('Sequence', node('String', '?'), node('Label', 'Spacing')),
-            'STAR': node('Sequence', node('String', '*'), node('Label', 'Spacing')),
-            'PLUS': node('Sequence', node('String', '+'), node('Label', 'Spacing')),
-            'OPEN': node('Sequence', node('Argument', node('String', '(')), node('Label', 'Spacing')),
-            'CLOSE': node('Sequence', node('String', ')'), node('Label', 'Spacing')),
-            'Dot': node('Node', 'Dot', node('Sequence', node('String', '.'), node('Label', 'Spacing'))),
-            'SPACE': node('Choice', node('String', ' '), node('String', '\t'), node('Label', 'EOL')),
-            'EOL': node('Choice', node('String', '\r\n'), node('String', '\r'), node('String', '\n')),
-            'EOF': node('NotLookahead', node('Dot',)),
-            'CharClass': node('Node', 'CharClass', node('Sequence', node('String', '['), node('Choice', node('Argument', node('Sequence', node('Label', 'Char'), node('String', '-'), node('Label', 'Char'))), node('Argument', node('Label', 'Char'))), node('ZeroOrMore', node('Sequence', node('NotLookahead', node('String', ']')), node('Choice', node('Argument', node('Sequence', node('Label', 'Char'), node('String', '-'), node('Label', 'Char'))), node('Argument', node('Label', 'Char'))))), node('String', ']'), node('Label', 'Spacing'))),
-            'String': node('Node', 'String', node('Sequence', node('Choice', node('Sequence', node('String', '"'), node('Argument', node('ZeroOrMore', node('Sequence', node('NotLookahead', node('String', '"')), node('Label', 'Char')))), node('String', '"')), node('Sequence', node('String', "'"), node('Argument', node('ZeroOrMore', node('Sequence', node('NotLookahead', node('String', "'")), node('Label', 'Char')))), node('String', "'"))), node('Label', 'Spacing'))),
-            'Char': node('Argument', node('Choice', node('Sequence', node('String', '\\'), node('CharClass', ']', '[', 'n', 'r', 't', "'", '"', '\\')), node('Sequence', node('String', '\\'), node('CharClass', '0-2'), node('CharClass', '0-7'), node('CharClass', '0-7')), node('Sequence', node('String', '\\'), node('CharClass', '0-7'), node('ZeroOrOne', node('CharClass', '0-7'))), node('Sequence', node('NotLookahead', node('String', '\\')), node('Dot',))))}
+        self.startNode = startNode
 
+        # for each clause, get a list of parent seed clauses
+        self.seedClauses: dict[ParseClause, list[ParseClause]] = defaultdict(list)
+        for child, parents in graph.items():
+            self.seedClauses[child] = [parent for parent in parents if parent.couldStartWith(child)]
+
+        # these clauses must always be evaluated at each position
+        # because they could consume no input.
+        for clause in self.clauseIdx:
+            if not clause.mustConsumeInput():
+                self.alwaysEval.add(clause)
+        for p in graph[String(' ')]:
+            print(p)
+        for p in self.seedClauses[String(' ')]:
+            print(p)
+
+
+    def __call__(self, src:str) -> ParseNode | None:
+        memo: memo = {}
+        q:list[tuple[int, int, ParseClause]] = [
+            (-srcIdx, self.clauseIdx[clause], clause)
+            for srcIdx in range(len(src) + 1)
+            for clause in self.clauseIdx
+            # TODO we shouldn't have to always evaluate every clause
+        ]
+        heapq.heapify(q)
+        print(f"{len(src)=}")
+        while q:
+            item = heapq.heappop(q)
+            while q and item[:2] == q[0][:2]:
+                # it is possible for duplicate work to be enqueued
+                # the duplicate work will always be sequential,
+                heapq.heappop(q)
+            srcIdx, cI, clause = item
+            srcIdx = -srcIdx
+            mIdx = srcIdx, clause
+
+            node = clause.match(srcIdx, src, memo)
+            if node is None:
+                #print(f"{srcIdx} None {cI:>50}:{str(clause)}")
+                continue
+            if node.start != node.stop:
+                print(f"[{node.start}:{node.stop}] {repr(src[node.start:node.stop])if srcIdx < len(src) else '⊥':<{len(src)}} {cI:>30}:{str(clause)} ")
+                pass
+            #print(srcIdx, isinstance(clause, Terminal), clause, node)
+            # TODO There is one exception to this:
+            #   for First clauses, even before the length of the new match is checked against the length of the existing match as described above, the index of the matching subclause of each match must be compared, since the semantics of the First PEG operator require that an earlier matching subclause take priority over a later matching subclause 
+            # §2.8 matches must be longer than previously found matches to be preferred.
+            if mIdx in memo and node.stop <= memo[mIdx].stop:
+                print(f"dropping duplicate {mIdx}")
+                continue
+            # §2.6
+            memo[mIdx] = node
+            for seed in self.seedClauses[clause]:
+                heapq.heappush(q, (-srcIdx, self.clauseIdx[seed], seed))
+        return memo.get((0, self.startNode), None)
+
+# modified from https://bford.info/pub/lang/peg.pdf
+meta_grammar = r"""
+# Hierarchical syntax
+Grammar <- sp Definition+ !.
+Definition <- rule:(Identifier '<-' sp E)
+E <- ruleref:Identifier !LEFTARROW / '(' sp E ')' sp / Literal / Class / dot:'.' sp
+    / optional:(E '?' sp) / zero_or_more:(E '*' sp) / one_or_more:(E '+' sp)
+    / lookahead:('&' sp E) / notlookahead:('!' sp E) / label:(Identifier ':' E)
+    / seq:(E+)
+    / first:(E ('/' sp E)+)
+
+# Lexical syntax
+Identifier <- identifier:[a-zA-Z_]+ sp
+Literal <- literal:(['] (!['] Char)* ['] / ["] (!["] Char)* ["]) sp
+Class <- cclass:('[' (!']' string:(Char '-' Char / Char))* ']') sp
+Char <- '\\' [nrt'"\[\]\\]
+    / '\\' [0-2][0-7][0-7]
+    / '\\' [0-7][0-7]?
+    / !'\\' .
+sp <- (' ' / '\t' / EOL / Comment)*
+Comment <- '#' (!EOL .)* EOL
+EOL <- '\r\n' / '\n' / '\r'
+"""
+class grammar:
+    def __init__(self, startRule:str):
+        self.startRule = startRule
+        self.rules: dict[str, ParseClause] = {}
+    def __getitem__(self, key:str) -> RuleRef:
+        return RuleRef(key, self)
+    def __setitem__(self, key, value:ParseClause):
+        self.rules[key] = value
+    def __str__(self) -> str:
+        return '\n'.join(f"{k} <- {v}" for k,v in self.rules.items())
+
+class RuleRef(ParseClause):
+    def __init__(self, name:str, grammar:grammar):
+        self.name = name
+        self.grammar = grammar
+    @property
+    def rule(self) -> ParseClause:
+        return self.grammar.rules[self.name]
+    def match(self, srcIdx: int, src: str, memo: memo) -> ParseNode | None:
+        return self.rule.match(srcIdx, src, memo)
+
+    def couldStartWith(self, child: ParseClause) -> bool:
+        return self.rule.couldStartWith(child)
+
+    def mustConsumeInput(self, visited=None) -> bool:
+        return self.rule.mustConsumeInput(visited)
+    def withLabel(self, label: str):
+        return self.rule.withLabel(label)
+    def __str__(self) -> str:
+        return self.name
+    def __hash__(self) -> int:
+        return hash(self.name)
+
+def traverse(start:ParseClause):
+    seen = set()
+    def dfs(n):
+        while isinstance(n, RuleRef):
+            n = n.rule
+        if n in seen:
+            return
+        seen.add(n)
+        yield n
+        if isinstance(n, NonTerminal):
+            for child in n.spec:
+                yield from dfs(child)
+    return dfs(start)
+
+G = grammar('grammar')
+#EOL <- '\r\n' / '\n' / '\r'
+G['EOL'] = First(String(r'\r\n'), String(r'\n'), String(r'\r'))
+#Comment <- '#' (!EOL .)* EOL
+G['comment'] = Seq(String('#'), ZeroPlus(Not(G['EOL']), Dot()), G['EOL'])
+#sp <- (' ' / '\t' / EOL / Comment)*
+G['sp'] = ZeroPlus(First(String(' '), String(r'\t'), G['EOL'], G['comment']))
+#Char <- '\\' [nrt'"\[\]\\] / '\\' [0-2][0-7][0-7] / '\\' [0-7][0-7]? / !'\\' .
+ss = String(r'\\')
+o7 = CClass('0-7')
+G['char'] = First(Seq(ss, CClass(*"nrt'\"[]\\")), Seq(ss, CClass('0-2'), o7, o7), Seq(ss, o7, Optional(o7)),)
+#Class <- cclass:('[' (!']' string:(Char '-' Char / Char))* ']') sp
+G['class'] =  Seq(
+    Seq(
+        String('['),
+        ZeroPlus(
+            Not(String(']')),
+            First(Seq(G['char'], String('-'), G['char']), G['char'], label='string'),
+        ),
+        String(']'),
+        label='cclass'
+    ),
+    G['sp']
+)
+#Identifier <- identifier:[a-zA-Z_]+ sp
+G['identifier'] = Seq(OnePlus(CClass('a-z', 'A-Z', '_'), label='identifier'), G['sp'])
+# TODO
+#Literal <- literal:(['] (!['] Char)* ['] / ["] (!["] Char)* ["]) sp
+q = String("'")
+qq = String('"')
+G['literal'] = Seq(First(
+    Seq(q, ZeroPlus(Not(q), G['char']),q),
+    Seq(qq, ZeroPlus(Not(qq), G['char']),qq),
+    label='literal'
+), G['sp'])
+#Grammar <- sp Definition+ !.
+G['grammar'] = Seq(G['sp'], OnePlus(G['definition']), Not(Dot()))
+#Definition <- rule:(Identifier '<-' sp E)
+G['definition'] = Seq(G['identifier'], String('<-'), G['sp'], G['E'], label='rule')
+#E <- ruleref:Identifier !'<-' / '(' sp E ')' sp / Literal / Class / dot:'.' sp
+#    / optional:(E '?' sp) / zeroplus:(E '*' sp) / oneplus:(E '+' sp)
+#    / lookahead:('&' sp E) / notlookahead:('!' sp E) / label:(Identifier ':' E)
+#    / seq:(E+)
+#    / first:(E ('/' sp E)+)
+#
+G['E'] = First(
+    Seq(G['E'], String('?'), G['sp'], label='optional'),
+    Seq(G['E'], String('*'), G['sp'], label='zeroplus'),
+    Seq(G['E'], String('+'), G['sp'], label='oneplus'),
+    Seq(String('&'), G['sp'], G['E'], label='lookahead'),
+    Seq(String('!'), G['sp'], G['E'], label='notlookahead'),
+    Seq(G['identifier'], String(':'), G['sp'], G['E'], label='label'),
+    OnePlus(G['E'], label='seq'),
+    Seq(G['E'], OnePlus(String('/'), G['sp'], G['E']), label='first'),
+    # terminals
+    Seq(G['identifier'], Not(String('<-')), label='ruleref'),
+    Seq(String('('), G['sp'], G['E'], String(')'), G['sp']),
+    G['literal'], G['class'], Seq(String('.', label='dot'), G['sp']),
+)
+
+PikaMetaParser = PikaParser(G)
+
+def generateParser(grammar:str) -> PikaParser:
+    metaAST = PikaMetaParser(grammar)
+    if metaAST is None:
+        raise Exception("didn't cleanly parse grammar")
+    print(metaAST.format())
+    metaAST = metaAST.clean()
+    if metaAST is None:
+        raise Exception("didn't specify any labels?")
+    # metaAST.cast({
+    #     'optional',
+    #     'zeroplus',
+    #     'oneplus',
+    #     'lookahead',
+    #     'notlookahead',
+    #     'label',
+    #     'first',
+    #     'seq',
+    #     'ruleref',
+    # })
+    #
+
+if __name__ == "__main__":
+    test_grammar = "thing <- quark thing"
+    from pprint import pp
+    startNode = PikaMetaParser.startNode
+    # print(f'{startNode=!s}')
+    # print('clauseIdx', end='=')
+    # pp({str(k):v for k,v in PikaMetaParser.clauseIdx.items()})
+    # print('seedClauses', end='=')
+    # pp({str(k):[str(x) for x in v] for k,v in PikaMetaParser.seedClauses.items()})
+    
+    #print(G)
+    #q = G['sp']
+    #print(type(q).__name__, q, q.couldStartWith(String(' ')))
+    cI = sorted([(i,c.mustConsumeInput(), c in PikaMetaParser.alwaysEval, str(c)) for c, i in PikaMetaParser.clauseIdx.items()])
+    pp(cI)
+    generateParser(test_grammar)
+    nd = Not(String('<-'))
+
+    print(nd in PikaMetaParser.alwaysEval)

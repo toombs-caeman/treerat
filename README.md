@@ -304,6 +304,7 @@ I have a bunch of ideas for 'micro' languages which would be greatly aided by th
     * [vine](https://vine.dev/docs)
 * https://odin-lang.org/
 * https://jaiprogramming.com/
+* prolog - theorem solver languages, coc, lean minikanren
 
 * write landing pages for two imaginary languages
     * protolang/treerat - the language for prototyping languages
@@ -317,6 +318,7 @@ I have a bunch of ideas for 'micro' languages which would be greatly aided by th
 * [graphit](https://graphit-lang.org/language#the-graphit-programming-language)
 * https://peggyjs.org/online.html
 * https://www.scallop-lang.org/
+* [lobster-lang](https://www.strlen.com/lobster/)
 
 * [LSP](https://microsoft.github.io/language-server-protocol/overviews/lsp/overview/)
     * [lsp tutorial](https://prefab.cloud/blog/lsp-language-server-from-zero-to-completion/)

@@ -60,7 +60,7 @@ Finally, how do we model conditional change?
 Conditional flow constructs can in general be modeled as a node which, when ready, produces only one of two or more potential values. These "ready" values are not usually used by the destination nodes, but are required for those nodes to be ready like any other edge. Therefore, only one "branch" will ever be ready. A typical "if" statement would produce two such values, while a "case" statement might have many.
 
 However, this creates a problem. Consider the following python.
-```python
+```
 x = 0           # block 0
 ...
 if x:           # conditional
