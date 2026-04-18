@@ -133,6 +133,7 @@ class Language(abc.ABC):
         since there's no good way to detect that should be done from the grammar.
         """
         # enable readline if it's available
+        # TODO replace this mess with prompt_toolkit.PromptSession
         try:
             import readline
         except ImportError:

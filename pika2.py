@@ -3,7 +3,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 import heapq
 import itertools
-from typing import Callable, Generator, Iterable, Mapping
+from typing import Any, Callable, Generator, Iterable, Mapping
 
 """
 TODO
@@ -52,13 +52,13 @@ class T: # jank enum for clause types
 #TODO document parsing setup
 # assert len(clause) > 0 and isinstance(clause[0], int)
 # assert not any(isinstance(x, int) for x in clause[1:])
-type clause = tuple[int|str|clause,...]
+type clause = tuple[int, *tuple[str|bool|clause,...]]
 
 # match[label, start, stop, content]
 type match = tuple[str, int, int, tuple]
 
 # assert len(ast) > 0 and isinstance(ast[0], str)
-type ast = tuple[str|ast, ...]
+type ast = tuple[str, *tuple[str|ast]]
 
 type grammar = dict[str, clause]
 
@@ -410,7 +410,7 @@ G['E'] = first(
     label('dot', seq(lit('.'), ref('sp'))),
 )
 
-
+# TODO extract generic fmtTree
 def fmtMatch(src, n:match, *, prefix:str='', next_p=''):
     label, start, stop, content = n
     out = [
@@ -481,7 +481,7 @@ def trim(src:str, n:match) -> Generator[ast]:
         for c in n[3]:
             yield from trim(src, c)
 
-def evil(kernel:Mapping[str, Callable], instr:Iterable[ast]):
+def evil[X:tuple[ast|str]](kernel:Mapping[str, Callable[[*X], Any]], instr:Iterable[ast]):
     v = None
     for f, *args in instr:
         assert isinstance(f, str)

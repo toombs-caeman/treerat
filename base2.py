@@ -1,0 +1,246 @@
+from asyncio import Queue, TaskGroup, run
+from typing import  Generator, Iterable
+from dataclasses import dataclass, field
+from abc import ABC, abstractmethod
+
+class ParseError(Exception):
+    """raised if a parser fails on input while in strict mode."""
+
+class CompileError(Exception):
+    """raised if compile step fails unexpectedly."""
+
+class EvalError(Exception):
+    """raised if an evaluator fails unexpectedly."""
+
+class EvalAwaitInput(EvalError):
+    """raised if an evaluator has consumed its input."""
+class EvalShutdown(EvalError):
+    """The evaluator has reached a halt instruction."""
+
+type ast = tuple[str, *tuple[ast|str]]
+# tuple[style, content]
+type lexen = tuple[str, str]
+
+# TODO how do we handle continuable ParseErrors
+# do we need batch/interactive modes for parsing, evaluation?
+
+@dataclass(slots=True, frozen=True)
+class match:
+    """
+    representing a parsing match
+    """
+    start:int
+    stop:int
+    label:str = ''
+    content:'tuple[match,...]' = field(default_factory=tuple)
+    def toAst(self, src:str) -> Generator[ast]:
+        if self.label:
+            content = []
+            for c in self.content:
+                content.extend(c.toAst(src))
+            if content:
+                yield self.label, *content
+            else:
+                yield self.label, src[self.start:self.stop]
+        else:
+            for c in self.content:
+                yield from c.toAst(src)
+
+
+class namespace:
+    def __init__(self, nro:list[dict]|None=None):
+        self.__nro = nro or [{}]
+        # TODO what if it was nro[name, dict[depth, value]]
+        # def get(key):
+        #       defs = nro[key]
+        #       return defs[max(*defs)]
+        # 
+
+    def __getitem__(self, key:str):
+        return self.__get(key, slice(None))
+
+    @property
+    def global_(self):
+        return self.__nro[0]
+
+    def __get(self, key, sl:slice):
+        for ns in reversed(self.__nro[sl]):
+            if key in ns:
+                return ns[key]
+        raise NameError(key)
+
+    def __contains__(self, key):
+        return any(key in n for n in self.__nro)
+
+    def __setitem__(self, key, value):
+        self.__nro[-1][key] = value
+
+    def __enter__(self):
+        self.__nro.append({})
+        return self
+
+    def __exit__(self, *_):
+        return self.__nro.pop()
+    def hoist(self, *names, levels=1):
+        # move a key up the nro
+        raise NotImplemented
+
+class Visualizer(ABC):
+    """Base class for graph visualizations."""
+    wait  = 'black' # computation is not ready, black is the default color
+    ready = 'blue'  # computation is ready to proceed
+    active= 'green' # computation is active during this step
+    done  = 'gray'  # computation is complete
+    error = 'red'   # computation halted
+
+    @abstractmethod
+    def add_frame(self, data=None):
+        """add a new frame to the animation."""
+
+    @abstractmethod
+    def attr(self, __t, __h=None, /, **attrs):
+        """add attributes to node or edge."""
+
+class NoVis(Visualizer):
+    """Stub for when visualization is turned off."""
+    def noop(self, *args, **kwargs):
+        """don't do anything"""
+    attr = add_frame = noop
+    def __getattr__(self, name):
+        return self.noop
+    def __bool__(self):
+        return False
+
+class ParseVis(Visualizer):
+    """visualizer for parsers"""
+    pass
+    
+class Parser(ABC):
+    """Base class for parsers."""
+    @abstractmethod
+    def __call__(self, text:str, vis:Visualizer=NoVis()) -> match:
+        pass
+
+    def lex(self, text:str, style=None) -> Iterable[lexen]:
+        # TODO is this ok?
+        raise NotImplementedError()
+
+class Evaluator(ABC):
+    """
+    Base class for evaluators.
+
+    In general an evaluator embodies the semantics of a language.
+    Each evaluator receives an AST and does the computation represented by the AST.
+    Subclasses of Evaluator should implement the __call__() method to do this.
+
+    As a general pattern (not all evaluators have to do this), each recognized type of node
+    should have a corresponding method in the evaluator to implement the semantics of that node.
+    This makes it relatively straightforward to extend an Evaluator through subclassing.
+
+    Evaluators should raise a RuntimeError if the ast they receive is invalid.
+
+    vis is an optional visualizer, if present, each step of computation should be shown.
+    """
+    def __init__(self, ast:Iterable[ast], vis:Visualizer=NoVis()):
+        """
+        init should run compilation if the evaluator supports it
+        """
+        self._vis = vis
+        self.accept_input(ast)
+
+    @abstractmethod
+    def step(self):
+        """
+        process a single *step*, the meaning of this is defined by the evaluator specific
+        """
+        raise EvalError('not implemented')
+    # TODO step_into, step_over, step_out
+
+    # TODO should this be async instead?
+    # asyncio.Queue[ast]
+    def request_input(self):
+        raise EvalAwaitInput()
+    @abstractmethod
+    def accept_input(self, ast:Iterable[ast]):
+        """accept new ast to evaluate."""
+
+
+# TODO
+class LanguageDriver(ABC):
+    parser:Parser
+    evaluator:Evaluator
+    prompt = '> '
+
+    @abstractmethod
+    @classmethod
+    def from_sysargs(cls) -> 'LanguageDriver':
+        """
+        construct a language driver from cli arguments.
+
+        the intended use is:
+        if __name__ == "__main__":
+            LanguageDriver.from_args().run()
+        """
+
+    @abstractmethod
+    async def get_user_input(self) ->str:
+        """get a line of user input."""
+        raise NotImplementedError()
+
+    @abstractmethod
+    async def handleInterrupt(self) -> bool:
+        return True
+
+    async def input(self, stdin:Queue[str]):
+        shouldShutdown = False
+        while not shouldShutdown:
+            try:
+                await stdin.put(await self.get_user_input())
+            except EOFError:
+                shouldShutdown = True
+            except KeyboardInterrupt:
+                shouldShutdown = await self.handleInterrupt()
+        stdin.shutdown()
+
+    async def run_async(self):
+        stdin: Queue[str] = Queue()
+        stdast: Queue[ast] = Queue()
+        stdout: Queue[lexen] = Queue()
+        stderr: Queue[Exception] = Queue()
+        async with TaskGroup() as tg:
+            input = tg.create_task(self.input(stdin))
+            parse = tg.create_task(self.parse(stdin, stdast, stderr))
+            eval = tg.create_task(self.eval(stdast, stdout, stderr))
+            output = tg.create_task(self.output(stdout, stderr))
+
+    def run(self):
+        run(self.run_async())
+
+    def repl(self):
+        """
+        A stock standard read eval print loop (REPL).
+
+        This doesn't let you input multi-line expressions,
+        since there's no good way to detect that should be done from the grammar.
+        """
+        # TODO replace this mess with prompt_toolkit.PromptSession
+        # but not PromptSession, because I want to use prompt_toolkit to also run the visualiser
+        try:
+            import readline
+        except ImportError:
+            pass
+        # loop
+        while True:
+            try:
+                # read then eval
+                value = self(input(self.prompt))
+                # print
+                if value is not None:
+                    print(value)
+            except (ParseError, CompileError, EvalError) as e:
+                print(e)
+            except (KeyboardInterrupt, EOFError):
+                break
+
+
+
