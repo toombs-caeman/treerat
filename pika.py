@@ -11,19 +11,6 @@ import heapq
 # see also pika parsing paper: https://arxiv.org/pdf/2005.06444
 # comments containing '§' are referrencing sections of this paper
 
-"""
-TODO:
-* error recovery
-* can we implement a relatively efficient regex parser
-* exception types
-    * parse error
-* can we avoid explicitly flagging precedence and associativity rules?
-* can we avoid failure on mutual left recursion?
-* incremental parsing
-    * rather than indexing the cache on the absolute index of a character,
-    * store the input as a rope, then index on a node in the rope
-    * when an edit occurs, invalidate and reparse only spans that cross the edit.
-"""
 __all__ = [
     'PikaParser', # type
     'PikaMetaParser', # isinstance(PikaParser)
