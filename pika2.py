@@ -1,12 +1,20 @@
-from pprint import pp
 from collections import defaultdict
-from dataclasses import dataclass
+from enum import IntEnum
 import heapq
 import itertools
-from typing import Any, Callable, Generator, Iterable, Mapping
+from ast import literal_eval
+from typing import Literal
 
 """
 TODO
+* how does associativity shake out?
+    * can we force left and right association w/o flags?
+    * looks like `seq <- E E+` is right associative by default
+    * how do we flag this?
+    * like jon blow said, just do the wrong thing, and fix it in post
+
+* document this
+    * add § from paper
 
 * can we implement a relatively efficient regex parser
     * probably don't need to with the terminals optimization
@@ -16,8 +24,6 @@ TODO
     * how do we give meaningful information about where the parse failed?
     * can I emit parseErrors the same way as python does? with highlighting and context
 
-* how does associativity shake out?
-    * can we force left and right association w/o flags?
 
 * incremental parsing
     * rather than indexing the cache on the absolute index of a character,
@@ -28,31 +34,28 @@ see also pika parsing paper: https://arxiv.org/pdf/2005.06444
 comments containing '§' are referrencing sections of this paper
 """
 
-class T: # jank enum for clause types
+class T(IntEnum): # jank enum for clause types
     # pseudo
-    ref = 0
-    label = 1
+    ref = 0  # name
+    label = 1# label:
     # terminal
-    lit = 2 # ''
+    lit = 2  # ""
     char = 3 # []
     dot = 4  # .
     # non-terminal
     seq = 5  # ' '
     first = 6# /
     no = 7   # !
-    yes = 8 # &
+    yes = 8  # &
     one = 9  # +
     zed = 10 # *
     opt = 11 # ?
 
     # TODO the last piece of baked in standard syntax is the '-' in [a-c]
 
-#TODO distribute type hints
-#TODO document § from paper
-#TODO document parsing setup
 # assert len(clause) > 0 and isinstance(clause[0], int)
 # assert not any(isinstance(x, int) for x in clause[1:])
-type clause = tuple[int, *tuple[str|bool|clause,...]]
+type clause = tuple[T, *tuple[str|bool|clause,...]]
 
 # match[label, start, stop, content]
 type match = tuple[str, int, int, tuple]
@@ -71,12 +74,24 @@ def lit(value:str) -> clause:
     return T.lit, value
 def char(*spec:str, invert=False) -> clause:
     return T.char, invert, *spec
-def dot() -> clause:
+def dot(_=None) -> clause:
     return T.dot,
 def seq(*spec:tuple) -> clause:
-    return T.seq, *spec
+    c = []
+    for x in spec:
+        if x[0] == T.seq:
+            c.extend(x[1:])
+        else:
+            c.append(x)
+    return T.seq, *c
 def first(*spec:tuple) -> clause:
-    return T.first, *spec
+    c = []
+    for x in spec:
+        if x[0] == T.first:
+            c.extend(x[1:])
+        else:
+            c.append(x)
+    return T.first, *c
 def no(spec:tuple) -> clause:
     return T.no, spec
 def zed(spec:tuple) -> clause:
@@ -98,15 +113,7 @@ def genParser(grammar:grammar, startClause:str):
     """
     Generate a pika parsing function given a grammar.
     """
-    # TODO walk all clauses and subclauses to produce
-    # 1. an ordered set of all subclauses
-    # 2. a set of indices of parent clauses to trigger on match
-    # 3. a parsing function
 
-    # walk all clauses and subclauses reachable from the starting clause in a post order dfs
-    # TODO calculate parent seed clauses, and alwaysEval to avoid evaluating every clause at every position. heapify at the end
-    # terminals must be evaluated at every position.
-    # take special care to handle `!.`
 
     # TODO before any other optimization, try to normalize the rules
     # [^] -> .
@@ -151,6 +158,7 @@ def genParser(grammar:grammar, startClause:str):
 
             case T.lit | T.char | T.dot:
                 # TODO normalize char and extract single characters for initial terminal passes
+                # 
                 idx.append(n)
         clauses.append(n)
         newlen = len(idx) - 1
@@ -241,7 +249,7 @@ def genParser(grammar:grammar, startClause:str):
     alwaysRun = []
     nullable = set()
     for cI,c in enumerate(index):
-        if (m:=getMatch('', 0, index[cI], memo)) is not None:
+        if (m:=getMatch('', 0, c, memo)) is not None:
             # determine which clauses to always run
             # by matching them against an empty src string.
             memo[0,cI] = m
@@ -251,7 +259,7 @@ def genParser(grammar:grammar, startClause:str):
             # also include all terminal nodes
             alwaysRun.append(cI)
 
-    # TODO seed parent clauses
+    # seed parent clauses
     seeds = defaultdict(list)
     for cI,c in enumerate(index):
         match c[0]:
@@ -270,7 +278,7 @@ def genParser(grammar:grammar, startClause:str):
                 for child in c[1:]:
                     seeds[child].append(cI)
 
-    ## debug
+    # debug stats
     # print(f"rules={len(grammar)}")
     # print(f"{len(index)=}")
     # print(f"{len(alwaysRun)=}")
@@ -279,10 +287,12 @@ def genParser(grammar:grammar, startClause:str):
     # avg_seeds = sum(map(len, seeds.values())) / len(seeds)
     # print(f"{avg_seeds=}")
 
+    def fmt(cI):
+        return f"{cI}::{index[cI]}::{toPEG(clauses[cI])}"
     # for cI, c in enumerate(clauses):
-    #     print(cI, toPEG(c))
+    #     print(fmt(cI))
     #     for seed in seeds[cI]:
-    #         print(f'   {toPEG(clauses[seed])}')
+    #         print(f'   {fmt(seed)}')
 
     def parse(src:str) -> match | None:
         memo:dict[tuple[int, int], match] = {}
@@ -303,6 +313,7 @@ def genParser(grammar:grammar, startClause:str):
         #   add single character lookups as seeds for longer T.lit, still use startswith though
         #   dot probably requires special lookups still
         #   inverted T.char won't work well with this, probably separate that out.
+        #   take special care to handle `!.`
 
         # TODO nullable clauses can also be initialized with an empty string match
         #   this will automatically be overridden with longer match from seed if needed
@@ -341,6 +352,7 @@ def genParser(grammar:grammar, startClause:str):
 
             # for our purposes, I believe the clauses of interest are those with labels
             # other options include: rule definitions (ref), explicitly marking recovery points?
+            # instead of 'recovering' anything, just raise ParseError and point to the problem.
             pass
             #memoTree(src, memo, clauses)
         return goal
@@ -374,6 +386,15 @@ def memoTree(src, memo, clauses):
             line += [' '] * (len(src) * 2 - len(line)+1)
             print(''.join(line), f'¦{toPEG(clauses[cI])[:20]}')
 
+# there's probably a more robust way to do this
+transform = {
+    '[':'\\[',
+    ']':'\\]',
+    '\n':'\\n',
+    '\t':'\\t',
+    '\r':'\\r',
+    '\\':r'\\', # this goes last
+}
 
 def toPEG(e:tuple|dict) -> str:
     """format a PEG expression using the default peg syntax"""
@@ -389,7 +410,13 @@ def toPEG(e:tuple|dict) -> str:
                 case T.lit:
                     return repr(e[1])
                 case T.char:
-                    return f"[{'^' if e[1] else ''}{''.join(e[2:])}]"
+                    content = ['^' if e[1] else '']
+                    for rule in e[2:]:
+                        if len(rule) == 1:
+                            content.append(rule)
+                        else: # should be len(rule) == 2, but we'll be permissive here
+                            content.extend((rule[0], '-', rule[-1]))
+                    return f"[{''.join(transform.get(c, c) for c in content)}]"
                 case T.dot:
                     return '.'
                 case T.seq:
@@ -398,78 +425,88 @@ def toPEG(e:tuple|dict) -> str:
                     return f"({' / '.join(toPEG(x) for x in e[1:])})"
                 case T.no:
                     return '!' + toPEG(e[1])
+                case T.yes:
+                    return '&' + toPEG(e[1])
                 case T.zed:
                     return toPEG(e[1]) + '*'
                 case T.one:
                     return toPEG(e[1]) + '+'
                 case T.opt:
                     return toPEG(e[1]) + '?'
-                case T.yes:
-                    return '&' + toPEG(e[1])
                 case _:
                     raise ValueError(f"{e=}")
         case _:
             raise ValueError(f"{e=}")
 
-G = {}
-#EOL <- '\r\n' / '\n' / '\r'
+G:grammar = {}
 G['EOL'] = first(lit('\r\n'), lit('\n'), lit('\r'))
-#Comment <- '#' (!EOL .)* EOL
 G['comment'] = seq(lit('#'), zed(seq(no(ref('EOL')), dot())), ref('EOL'))
-#sp <- (' ' / '\t' / EOL / Comment)*
 G['sp'] = zed(first(lit(' '), lit('\t'), ref('EOL'), ref('comment')))
 #Char <- '\\' [nrt'"\[\]\\] / '\\' [0-2][0-7][0-7] / '\\' [0-7][0-7]? / !'\\' .
-ss = lit(r'\\')
-o7 = char('0-7')
+ss = lit('\\')
+o7 = char('07')
 G['char'] = first(
     seq(ss, char(*"nrt'\"[]\\")),
-    seq(ss, char('0-2'), o7, o7),
+    seq(ss, char('02'), o7, o7),
     seq(ss, o7, opt(o7)),
     seq(no(ss), dot()),
 )
-#Class <- cclass:('[' (!']' string:(Char '-' Char / Char))* ']') sp
+#Class <- cclass:('[' (!']' lit:(Char '-' Char / Char))* ']') sp
 G['class'] =  seq(
     label('char', seq(
-        lit('['), zed(seq(no(lit(']')), label('lit', first(seq(ref('char'), lit('-'), ref('char')), ref('char'))), )),
+        lit('['), zed(seq(
+            no(lit(']')),
+            label('crange', first(
+                seq(ref('char'), lit('-'), ref('char')),
+                ref('char')
+            )),
+        )),
         lit(']'),
     )),
     ref('sp')
 )
 #Identifier <- identifier:[a-zA-Z_]+ sp
-G['identifier'] = seq(label('identifier', one(char('a-z', 'A-Z', '_'))), ref('sp'))
+G['identifier'] = seq(label(
+    'identifier',
+    seq(char('az', 'AZ', '_'), zed(char('az', 'AZ', '_', '09'))),
+    
+), ref('sp'))
 #Literal <- literal:(['] (!['] Char)* ['] / ["] (!["] Char)* ["]) sp
 q = lit("'")
 qq = lit('"')
-G['literal'] = seq(label('literal', first(
+G['lit'] = seq(label('lit', first(
     seq(q, zed(seq(no(q), ref('char'))), q),
     seq(qq, zed(seq(no(qq), ref('char'))),qq)
 )), ref('sp'))
-#Grammar <- sp Definition+ !.
-G['grammar'] = seq(ref('sp'), zed(ref('definition')), label('end',no(dot())))
-#Definition <- rule:(Identifier '<-' sp E)
+G['grammar'] = seq(ref('sp'), zed(ref('definition')), no(dot()))
 G['definition'] = label('rule',seq(ref('identifier'), lit('<-'), ref('sp'), ref('E')))
-#E <- ruleref:Identifier !'<-' / '(' sp E ')' sp / Literal / Class / dot:'.' sp
-#    / optional:(E '?' sp) / zeroplus:(E '*' sp) / oneplus:(E '+' sp)
-#    / lookahead:('&' sp E) / notlookahead:('!' sp E) / label:(Identifier ':' E)
-#    / seq:(E+)
-#    / first:(E ('/' sp E)+)
-#
-G['E'] = first(
-    label('opt', seq(ref('E'), lit('?'), ref('sp'))),
-    label('zed', seq(ref('E'), lit('*'), ref('sp'))),
-    label('one', seq(ref('E'), lit('+'), ref('sp'))),
-    label('yes', seq(lit('&'), ref('sp'), ref('E'))),
-    label('no',seq(lit('!'), ref('sp'), ref('E'))),
-    label('label',seq(ref('identifier'), lit(':'), ref('sp'), ref('E'))),
-    label('seq', seq(ref('E'), one(ref('E')))),
-    label('first',seq(ref('E'), one(seq(lit('/'), ref('sp'), ref('E'))))),
+G['E'] = first( # choice/first
+    label('first',seq(ref('E'), lit('/'), ref('sp'), ref('E1'))),
+    ref('E1')
+)
+G['E1'] = first( # sequence
+    label('seq', seq(ref('E1'), ref('E2'))),
+    ref('E2')
+)
+G['E2'] = first( # prefix
+    label('yes', seq(lit('&'), ref('sp'), ref('E3'))),
+    label('no',seq(lit('!'), ref('sp'), ref('E3'))),
+    label('label',seq(ref('identifier'), lit(':'), ref('sp'), ref('E2'))),
+    ref('E3')
+)
+G['E3'] = first( # postfix
+    label('opt', seq(ref('E4'), lit('?'), ref('sp'))),
+    label('zed', seq(ref('E4'), lit('*'), ref('sp'))),
+    label('one', seq(ref('E4'), lit('+'), ref('sp'))),
+    ref('E4')
+)
+G['E4'] = first( # terminal and paren
     label('ref',seq(ref('identifier'), no(lit('<-')))),
-    seq(lit('('), ref('sp'), ref('E'), lit(')'), ref('sp')),
-    ref('literal'),
+    ref('lit'),
     ref('class'),
     label('dot', seq(lit('.'), ref('sp'))),
+    seq(lit('('), ref('sp'), ref('E'), lit(')'), ref('sp')),
 )
-
 # TODO extract generic fmtTree
 def fmtMatch(src, n:match, *, prefix:str='', next_p=''):
     label, start, stop, content = n
@@ -504,12 +541,48 @@ def fmtAst(a:ast|str, *, prefix='', next_p=''):
                 out.append(fmtAst(a[-1], prefix=prefix, next_p='└'))
             return '\n'.join(out)
 
-def grammarFromPEG(src:str):
-    # TODO
-    kernel = ...
+def grammarFromPEG(src:str) -> grammar | None:
     if (m:=metaParser(src)) is None:
         return None
-    return evil(kernel, trim(src, m))
+    G:grammar = {}
+    def rule(name, expr):
+        G[name] = expr
+    def identifier(name):
+        return name
+    def crange(name:str):
+        # TODO unescape chars
+        for new, old in transform.items():
+            name = name.replace(old, new)
+        match len(name):
+            case 1:
+                return name
+            case 3:
+                return name[0::2]
+            case _:
+                raise ValueError(name)
+
+    def char(*lit):
+        inv = lit and lit[0] == '^'
+        if inv:
+            lit = lit[1:]
+        return T.char, inv, *lit
+    def lit(value):
+        return T.lit, literal_eval(value)
+
+    k = {
+        func.__name__:func
+        for func in [rule, identifier, crange, ref, label, lit, char, dot, seq, first, no, zed, one, opt, yes]
+    }
+    def toC(a):
+        if isinstance(a, (str,bool)):
+            return a
+        func = k.get(a[0])
+        if func is None:
+            raise ValueError(f'unknown ast type {a[0]}')
+        return func(*map(toC, a[1:]))
+    for a in trim(src, m):
+        toC(a)
+    return G
 
 def test_fixedpoint():
     assert  G == grammarFromPEG(toPEG(G))
@@ -526,9 +599,11 @@ def test_fmt():
     assert False, "write tests for toPEG(grammar)"
 
 # TODO tests
-# trim, fmtMatch, fmtAst, evil
+# trim, fmtMatch, fmtAst
 
-def trim(src:str, n:match) -> Generator[ast]:
+def trim(src:str, n:match|None):
+    if n is None:
+        return
     if n[0]:
         content = []
         for c in n[3]:
@@ -541,18 +616,11 @@ def trim(src:str, n:match) -> Generator[ast]:
         for c in n[3]:
             yield from trim(src, c)
 
-def evil[X:tuple[ast|str]](kernel:Mapping[str, Callable[[*X], Any]], instr:Iterable[ast]):
-    v = None
-    for f, *args in instr:
-        assert isinstance(f, str)
-        v = kernel[f](*args)
-    return v
 
 metaGrammar = toPEG(G)
 metaParser = genParser(G, 'grammar')
 #print(metaGrammar)
 
-#exit()
 def pparse(src:str, parser=metaParser):
     m = parser(src)
     if m is None:
@@ -562,12 +630,27 @@ def pparse(src:str, parser=metaParser):
         #print(fmtMatch(src, m))
         for n in trim(src, m):
             print(fmtAst(n))
-def ptest(src, parser=metaParser):
+def ptest(src=metaGrammar, parser=metaParser):
     m = parser(src)
-    print(f"{'❌' if m is None else '✅'} {src!r}")
+    print(f"{'❌' if m is None else '✅'} {src}")
 #pparse('a <- a boo <- a')
 #pparse('a <- a*')
 #pparse('"abc"', genParser(G, 'literal'))
 #pparse('a <- "a"', metaParser)
 for line in metaGrammar.splitlines():
-    pparse(line)
+    ptest(line)
+ptest()
+# for a in trim(metaGrammar, metaParser(metaGrammar)):
+#     print(fmtAst(a))
+newG = grammarFromPEG(metaGrammar)
+#print(toPEG(G))
+print()
+print(metaGrammar)
+for k,newv in newG.items():
+    oldv = G[k]
+    print()
+    print(f"{k} <- {toPEG(oldv)}")
+    print(oldv)
+    print(newv)
+    assert oldv == newv
+assert newG == G
