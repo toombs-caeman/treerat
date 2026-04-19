@@ -195,6 +195,17 @@ I have a bunch of ideas for 'micro' languages which would be greatly aided by th
 
 
 # features to play with later
+* numbers
+    * [flint](https://flintlib.org/)
+        *[interval unions](https://www.ime.usp.br/~montanhe/unions.pdf)
+    * bignum
+    * interval arithmatic
+    * complex numbers
+    * calculus
+    * numbers with units
+    * FFT
+    * arrays
+    * vectors
 * embed debug visualization types as an extension of debug symbols
     * how should utilization of a function be visualized in a debugging context?
     * expected data size?
@@ -204,7 +215,7 @@ I have a bunch of ideas for 'micro' languages which would be greatly aided by th
     * DeBrujin naming
     * [name resolution](https://willcrichton.net/notes/specificity-programming-languages/)
 * optimization modes
-* reversible parse expressions?
+* reversible parse expressions? equivalent to a formatter
 * name resolution
     * scoping, garbage collection, var lifetimes
 * representing state machines such that transition diagrams can be automatically generated, and properties statically analyzed?

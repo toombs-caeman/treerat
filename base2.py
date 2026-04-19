@@ -1,7 +1,10 @@
 from asyncio import Queue, TaskGroup, run
-from typing import  Generator, Iterable
+from typing import  Callable, Generator, Iterable
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
+
+# TODO linter
+type linter = Callable[[str], str]
 
 class ParseError(Exception):
     """raised if a parser fails on input while in strict mode."""

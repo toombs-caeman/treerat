@@ -118,39 +118,57 @@ def genParser(grammar:grammar, startClause:str):
     # a a* -> a+  # it is good to eliminate nullable clauses
     # references can always be eliminated unless recursive
 
+    # detect `a <- a`, which is ill-defined. equivalent to 
+    for k,v in grammar.items():
+        if v == ref(k):
+            raise ValueError(f"rule {k} is ill-defined (untethered self reference).")
+
     # an ordered list of subclauses in the grammar.
     # Each clause is at its assigned index
+
+    # a list of all subclauses in the grammar, for debugging only
     clauses = []
+    # this will be the list of kinds of ast nodes this parser can produce
+    labels = set()
     # the same list of clauses, but where all subclauses
     # have been substituted out with their index
-    index = []
+    idx = []
     # dict[clause, index]
     seen = {}
     def dfs(n):
         if n in seen:
             return seen[n]
-        seen[n] = None
+        seen[n] = n
+        oldlen = len(clauses)
         match n[0]:
             case T.ref:
-                index.append((T.ref, dfs(grammar[n[1]])))
+                idx.append((T.ref, dfs(grammar[n[1]])))
             case T.label:
-                index.append((T.label, n[1], dfs(n[2])))
+                labels.add(n[1])
+                idx.append((T.label, n[1], dfs(n[2])))
             case T.seq | T.first | T.no | T.yes | T.zed | T.one | T.opt:
-                index.append((n[0], *(dfs(x) for x in n[1:])))
+                idx.append((n[0], *(dfs(x) for x in n[1:])))
 
             case T.lit | T.char | T.dot:
-                index.append(n)
-        i = len(clauses)
-        # TODO there needs to be a more extensive cleanup
-        # to catch the None references introduced by seen[n]
-        seen[n] = i # update reference
+                # TODO normalize char and extract single characters for initial terminal passes
+                idx.append(n)
         clauses.append(n)
-        return i
-    dfs(grammar[startClause])
+        newlen = len(idx) - 1
+        # update with our actual index, now that we know it
+        seen[n] = newlen
+        # finally clean up references introduced by knowing our index late
+        # NOTE I believe it's correct that only references can produce cycles
+        if n[0] == T.ref:
+            idx[oldlen:newlen] = [
+                tuple(newlen if x == n else x for x in idx)
+                if n in idx else idx
+                for idx in idx[oldlen:newlen]
+            ]
 
-    ## debug
-    # for i, c in enumerate(clauses):
-    #     print(i, index[i], toPEG(c))
+        return newlen
+    dfs(grammar[startClause])
+    # finalize index
+    index = tuple(idx)
 
     def getMatch(src, sI, clause, memo) -> match|None:
         k, *v = clause
@@ -261,13 +279,22 @@ def genParser(grammar:grammar, startClause:str):
     # avg_seeds = sum(map(len, seeds.values())) / len(seeds)
     # print(f"{avg_seeds=}")
 
+    # for cI, c in enumerate(clauses):
+    #     print(cI, toPEG(c))
+    #     for seed in seeds[cI]:
+    #         print(f'   {toPEG(clauses[seed])}')
+
     def parse(src:str) -> match | None:
         memo:dict[tuple[int, int], match] = {}
 
         # TODO rather than generating the full work queue all at once
         #   can/should we generate the queue one index at a time?
         #   we could then pre-heapify alwaysRun
+
+        # TODO don't use node() internally (in getMatch), make smaller memos
         #   memo could be memo:list[dict[int, match]] with the list index being -sI
+        # match can be simplified to just memo[sI][cI] = (endIdx, *(subsI, subcI))
+        # this is enough to recover the full match tree (check for labels in index[cI][0] == T.label).
 
         # TODO can/should we condense the terminal clauses to a regex?
         #   this pre-check would happen here.
@@ -306,19 +333,47 @@ def genParser(grammar:grammar, startClause:str):
             for c in seeds[cI]:
                 heapq.heappush(q, (-sI, c))
 
-        ## debug
-        # for sI in range(len(src)):
-        #     cI = max(cI for cI in range(len(index)) if (sI, cI) in memo)
-        #     m = (str(sI) + toPEG(clauses[cI]),) + memo[sI, cI][1:]
-        #     print(fmtMatch(src, m))
-        #
-        #
-        # pp(memo)
-        return memo.get((0, len(index)-1))
+        goal = memo.get((0, len(index)-1))
+        if goal is None:
+            # §3.2 error recovery
+            # Syntax errors can be defined as regions of the input that are not spanned by matches of rules of interest. Recovering after a syntax error involves finding the next match in the memo table after the end of the syntax error for any grammar
+            # rule of interest: for example, a parser could skip over a syntax error to find the next complete function, statement, or expression in the input. This lookup requires O(log n) time in the length of the input if a skip list or balanced tree is used to store each row of the memo table.
+
+            # for our purposes, I believe the clauses of interest are those with labels
+            # other options include: rule definitions (ref), explicitly marking recovery points?
+            pass
+            #memoTree(src, memo, clauses)
+        return goal
 
 
     # return parsing function
     return parse
+
+def memoTree(src, memo, clauses):
+        # TODO attempt to print a parse tree from memo like Fig.4
+        matches = [(-cI, start, end, src[start:end]) for (_, cI), (_, start, end, _) in memo.items()]
+        matches.sort()
+        print(''.join(f" {c}" for c in src))
+        for cI, g in itertools.groupby(matches, lambda x:x[0]):
+            cI = -cI
+            line = []
+            oldEnd = -1
+            for _, start, end, s in g:
+                # omit empty and overlapping matches
+                if not s or start < oldEnd:
+                    continue
+                line += [' '] * (start * 2 - len(line))
+                if start != oldEnd:
+                    line.append('│')
+                line.extend(' '.join(s))
+                line.append('│')
+                oldEnd = end
+            if not line:
+                continue
+
+            line += [' '] * (len(src) * 2 - len(line)+1)
+            print(''.join(line), f'¦{toPEG(clauses[cI])[:20]}')
+
 
 def toPEG(e:tuple|dict) -> str:
     """format a PEG expression using the default peg syntax"""
@@ -366,7 +421,12 @@ G['sp'] = zed(first(lit(' '), lit('\t'), ref('EOL'), ref('comment')))
 #Char <- '\\' [nrt'"\[\]\\] / '\\' [0-2][0-7][0-7] / '\\' [0-7][0-7]? / !'\\' .
 ss = lit(r'\\')
 o7 = char('0-7')
-G['char'] = first(seq(ss, char(*"nrt'\"[]\\")), seq(ss, char('0-2'), o7, o7), seq(ss, o7, opt(o7)),)
+G['char'] = first(
+    seq(ss, char(*"nrt'\"[]\\")),
+    seq(ss, char('0-2'), o7, o7),
+    seq(ss, o7, opt(o7)),
+    seq(no(ss), dot()),
+)
 #Class <- cclass:('[' (!']' string:(Char '-' Char / Char))* ']') sp
 G['class'] =  seq(
     label('char', seq(
@@ -496,11 +556,18 @@ metaParser = genParser(G, 'grammar')
 def pparse(src:str, parser=metaParser):
     m = parser(src)
     if m is None:
-        print('failed')
+        print(f'❌ {src!r}')
     else:
-        print(fmtMatch(src, m))
+        print(f'✅ {src!r}')
+        #print(fmtMatch(src, m))
         for n in trim(src, m):
             print(fmtAst(n))
-
-pparse('a <- a boo <- a')
-pparse('a <- a*')
+def ptest(src, parser=metaParser):
+    m = parser(src)
+    print(f"{'❌' if m is None else '✅'} {src!r}")
+#pparse('a <- a boo <- a')
+#pparse('a <- a*')
+#pparse('"abc"', genParser(G, 'literal'))
+#pparse('a <- "a"', metaParser)
+for line in metaGrammar.splitlines():
+    pparse(line)
