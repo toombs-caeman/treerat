@@ -1,21 +1,30 @@
-from collections import defaultdict
-from enum import IntEnum
-import heapq
-import itertools
-from ast import literal_eval
-from typing import Literal
-
 """
-TODO
+# what is this
+see also pika parsing paper: https://arxiv.org/pdf/2005.06444
+
+# Design
+This was implemented with the idea of porting it to another language half in mind, so some implmentation decisions might seem weirdly unpythonic.
+
+comments containing '§' are referrencing sections of this paper
+
+## clauses
+rather than use classes, use only basic python types: bool, tuple, str
+This is essentially emulating a tagged union, and translates very directly to a struct.
+
+
+## TODO I got some questions
+* document this
+    * add § from paper
+    * this docstring
+
 * how does associativity shake out?
     * can we force left and right association w/o flags?
     * looks like `seq <- E E+` is right associative by default
     * how do we flag this?
     * like jon blow said, just do the wrong thing, and fix it in post
 
-* document this
-    * add § from paper
 
+* terminal optimization
 * can we implement a relatively efficient regex parser
     * probably don't need to with the terminals optimization
 
@@ -24,17 +33,32 @@ TODO
     * how do we give meaningful information about where the parse failed?
     * can I emit parseErrors the same way as python does? with highlighting and context
 
-
 * incremental parsing
     * rather than indexing the cache on the absolute index of a character,
     * store the input as a rope, then index on a node in the rope
     * when an edit occurs, invalidate and reparse only spans that cross the edit.
 
-see also pika parsing paper: https://arxiv.org/pdf/2005.06444
-comments containing '§' are referrencing sections of this paper
+* unify with packrat parser
+    * use the same grammar format and match (same base)
+    * should also be able to use the same metaGrammer and toPEG
+    * at least use the same base
+    * use tests to show equivalence
 """
+from abc import ABC, abstractmethod
+from collections import defaultdict
+from enum import IntEnum
+import heapq
+import itertools
+from ast import literal_eval
+from typing import NamedTuple
 
-class T(IntEnum): # jank enum for clause types
+
+class clause(NamedTuple):
+    """base class for parser clauses"""
+
+
+# TODO use typing.NamedTuple
+class T(IntEnum): # clause types
     # pseudo
     ref = 0  # name
     label = 1# label:
@@ -51,19 +75,13 @@ class T(IntEnum): # jank enum for clause types
     zed = 10 # *
     opt = 11 # ?
 
-    # TODO the last piece of baked in standard syntax is the '-' in [a-c]
-
-# assert len(clause) > 0 and isinstance(clause[0], int)
-# assert not any(isinstance(x, int) for x in clause[1:])
+type grammar = dict[str, clause]
 type clause = tuple[T, *tuple[str|bool|clause,...]]
 
 # match[label, start, stop, content]
 type match = tuple[str, int, int, tuple]
 
-# assert len(ast) > 0 and isinstance(ast[0], str)
-type ast = tuple[str, *tuple[str|ast]]
-
-type grammar = dict[str, clause]
+type ast = tuple[str, *tuple[str|ast,...]]
 
 # helper functions to create parsing clauses
 def ref(name:str) -> clause:
@@ -73,6 +91,7 @@ def label(name:str, clause:tuple) -> clause:
 def lit(value:str) -> clause:
     return T.lit, value
 def char(*spec:str, invert=False) -> clause:
+    assert all(len(s) <= 2 for s in spec)
     return T.char, invert, *spec
 def dot(_=None) -> clause:
     return T.dot,
@@ -105,7 +124,7 @@ def yes(spec:tuple) -> clause:
 
 
 # helper function to make parsed nodes
-# TODO it doesn't make sense to use *content, when content would do
+# TODO eliminate this
 def node(start:int, stop:int, *content: tuple, label:str='') -> match:
     return label, start, stop, content
 
@@ -113,40 +132,45 @@ def genParser(grammar:grammar, startClause:str):
     """
     Generate a pika parsing function given a grammar.
     """
-
-
     # TODO before any other optimization, try to normalize the rules
+    #   use a copy of grammar
     # [^] -> .
-    # ![abc]. -> [^abc]
+    # ![abc] . -> [^abc]
     # 'a'/'b' -> [ab]
     # 'a' 'b' -> 'ab'
     # [caab] -> [abc] -> [a-c]
     # !!a -> &a
-    # a a* -> a+  # it is good to eliminate nullable clauses
-    # references can always be eliminated unless recursive
+    # a+ -> a a*
+    # a? -> a / ''
+    # a (b c) -> a b c
+    # a/(b/c) -> a/b/c
+    # references can always be eliminated unless recursive. careful
 
-    # detect `a <- a`, which is ill-defined. equivalent to 
+    # detect `a <- a`, which is ill-defined.
     for k,v in grammar.items():
-        if v == ref(k):
-            raise ValueError(f"rule {k} is ill-defined (untethered self reference).")
+        if v[0] == T.ref and v[1] == k:
+            raise ValueError(f"rule {k} is ill-defined (rule in form `a <- a`).")
 
-    # an ordered list of subclauses in the grammar.
-    # Each clause is at its assigned index
-
-    # a list of all subclauses in the grammar, for debugging only
-    clauses = []
-    # this will be the list of kinds of ast nodes this parser can produce
+    # this will be the set of ast nodes this parser can produce
     labels = set()
-    # the same list of clauses, but where all subclauses
-    # have been substituted out with their index
+
+    # §2.5
+    # Walk all subclauses in the grammar which are reachable from the given starting rule using a depth-first search.
+    # The purpose of this is to generate a topological sort of the grammar as a graph of clauses.
+    # i.e. idx is a deduplicated post-order traversal of the graph.
+    # While we're visiting each node, transform references to subclauses to integer indexes into idx.
     idx = []
-    # dict[clause, index]
     seen = {}
     def dfs(n):
         if n in seen:
             return seen[n]
+        # Mark this node as visited.
+        # We could use any unique object here, but this one is handy.
+        # Ideally, this should be the index of this node in idx, but we don't know that yet.
+        # Any subclauses which capture a reference to n will have to be updated once we do.
         seen[n] = n
-        oldlen = len(clauses)
+        # to avoid updating the whole index.
+        oldlen = len(idx)
         match n[0]:
             case T.ref:
                 idx.append((T.ref, dfs(grammar[n[1]])))
@@ -157,12 +181,10 @@ def genParser(grammar:grammar, startClause:str):
                 idx.append((n[0], *(dfs(x) for x in n[1:])))
 
             case T.lit | T.char | T.dot:
-                # TODO normalize char and extract single characters for initial terminal passes
-                # 
+                # TODO extract single characters for initial terminal passes
                 idx.append(n)
-        clauses.append(n)
         newlen = len(idx) - 1
-        # update with our actual index, now that we know it
+        # Update with our actual index, now that we know it.
         seen[n] = newlen
         # finally clean up references introduced by knowing our index late
         # NOTE I believe it's correct that only references can produce cycles
@@ -175,8 +197,7 @@ def genParser(grammar:grammar, startClause:str):
 
         return newlen
     dfs(grammar[startClause])
-    # finalize index
-    index = tuple(idx)
+    index = tuple(idx) # finalize
 
     def getMatch(src, sI, clause, memo) -> match|None:
         k, *v = clause
@@ -184,21 +205,19 @@ def genParser(grammar:grammar, startClause:str):
         match k:
             case T.dot:
                 if sI < len(src):
-                    m = node(sI, sI+1)
+                    return node(sI, sI+1)
             case T.char:
                 inv, *classes = v
-                # TODO this isn't very robust w/ escape chars
                 if sI< len(src) and inv ^ any(c[0] <= src[sI] <= c[-1] for c in classes):
-                    m = node(sI, sI+1)
+                    return node(sI, sI+1)
             case T.lit:
                 if src.startswith(v[0], sI):
-                    m = node(sI, sI+len(v[0]))
+                    return node(sI, sI+len(v[0]))
             case T.label:
-                m = memo.get((sI, v[1]))
-                if m:
-                    m = (v[0],) + m[1:]
+                if (m := memo.get((sI, v[1]))):
+                    return (v[0],) + m[1:]
             case T.ref:
-                m = memo.get((sI, v[0]))
+                return memo.get((sI, v[0]))
             case T.seq:
                 c = []
                 end = sI
@@ -208,22 +227,22 @@ def genParser(grammar:grammar, startClause:str):
                         break
                     end = c[-1][2] # TODO .stop messy
                 else:
-                    m = node(sI, end, *c)
+                    return node(sI, end, *c)
             case T.first:
                 for subc in v:
                     m = memo.get((sI, subc))
                     if m is not None:
-                        break
+                        return m
             case T.no:
                 if memo.get((sI, v[0])) is None:
-                    m = node(sI, sI)
+                    return node(sI, sI)
             case T.zed:
                 c = []
                 end = sI
                 while (x:=memo.get((end, v[0]))) is not None:
                     c.append(x)
                     end = c[-1][2] # TODO .stop messy
-                m = node(sI, end, *c)
+                return node(sI, end, *c)
             case T.one:
                 end = sI
                 if (x:=memo.get((sI, v[0]))) is not None:
@@ -232,18 +251,15 @@ def genParser(grammar:grammar, startClause:str):
                     while (x:=memo.get((end, v[0]))) is not None:
                         c.append(x)
                         end = c[-1][2] # TODO .stop messy
-                    m = node(sI, end, *c)
+                    return node(sI, end, *c)
             case T.opt:
                 m = memo.get((sI, v[0]))
-                if m is None:
-                    m = node(sI, sI)
+                return node(sI, sI) if m is None else m
             case T.yes:
                 if memo.get((sI, v[0])):
-                    m = node(sI, sI)
+                    return node(sI, sI)
             case _:
                 raise ValueError(f"{clause=}")
-        return m
-
 
     memo = {}
     alwaysRun = []
@@ -277,22 +293,6 @@ def genParser(grammar:grammar, startClause:str):
             case T.first | T.no | T.yes | T.zed | T.one | T.opt | T.ref:
                 for child in c[1:]:
                     seeds[child].append(cI)
-
-    # debug stats
-    # print(f"rules={len(grammar)}")
-    # print(f"{len(index)=}")
-    # print(f"{len(alwaysRun)=}")
-    # print(f"{len(nullable)=}")
-    # print(f"terminals={len(alwaysRun)-len(nullable)}")
-    # avg_seeds = sum(map(len, seeds.values())) / len(seeds)
-    # print(f"{avg_seeds=}")
-
-    def fmt(cI):
-        return f"{cI}::{index[cI]}::{toPEG(clauses[cI])}"
-    # for cI, c in enumerate(clauses):
-    #     print(fmt(cI))
-    #     for seed in seeds[cI]:
-    #         print(f'   {fmt(seed)}')
 
     def parse(src:str) -> match | None:
         memo:dict[tuple[int, int], match] = {}
@@ -354,7 +354,6 @@ def genParser(grammar:grammar, startClause:str):
             # other options include: rule definitions (ref), explicitly marking recovery points?
             # instead of 'recovering' anything, just raise ParseError and point to the problem.
             pass
-            #memoTree(src, memo, clauses)
         return goal
 
 
@@ -386,14 +385,18 @@ def memoTree(src, memo, clauses):
             line += [' '] * (len(src) * 2 - len(line)+1)
             print(''.join(line), f'¦{toPEG(clauses[cI])[:20]}')
 
-# there's probably a more robust way to do this
+# TODO there's probably a more robust way to do this
+#   there is a whole lot of complexity around char in general
 transform = {
     '[':'\\[',
     ']':'\\]',
     '\n':'\\n',
     '\t':'\\t',
     '\r':'\\r',
-    '\\':r'\\', # this goes last
+    # this goes last
+    # we make use of the fact that iteration over a dict
+    # has a guaranteed order
+    '\\':r'\\',
 }
 
 def toPEG(e:tuple|dict) -> str:
@@ -414,7 +417,8 @@ def toPEG(e:tuple|dict) -> str:
                     for rule in e[2:]:
                         if len(rule) == 1:
                             content.append(rule)
-                        else: # should be len(rule) == 2, but we'll be permissive here
+                        else:
+                            # assert len(rule) == 2, "T.char is malformed, but let's be permissive here"
                             content.extend((rule[0], '-', rule[-1]))
                     return f"[{''.join(transform.get(c, c) for c in content)}]"
                 case T.dot:
@@ -584,23 +588,6 @@ def grammarFromPEG(src:str) -> grammar | None:
         toC(a)
     return G
 
-def test_fixedpoint():
-    assert  G == grammarFromPEG(toPEG(G))
-
-def test_fmt():
-    test_node = node(0, 5, node(0,1), node(1,2, label='op'), node(2, 5, node(2, 3), node(3,4, label='op'), node(4,5), label='mul'), label='add')
-    assert fmtMatch('1+2*3',test_node) == """add:'1+2*3'
-├'1'
-├op:'+'
-└mul:'2*3'
- ├'2'
- ├op:'*'
- └'3'"""
-    assert False, "write tests for toPEG(grammar)"
-
-# TODO tests
-# trim, fmtMatch, fmtAst
-
 def trim(src:str, n:match|None):
     if n is None:
         return
@@ -619,38 +606,38 @@ def trim(src:str, n:match|None):
 
 metaGrammar = toPEG(G)
 metaParser = genParser(G, 'grammar')
-#print(metaGrammar)
 
-def pparse(src:str, parser=metaParser):
-    m = parser(src)
-    if m is None:
-        print(f'❌ {src!r}')
-    else:
-        print(f'✅ {src!r}')
-        #print(fmtMatch(src, m))
-        for n in trim(src, m):
-            print(fmtAst(n))
-def ptest(src=metaGrammar, parser=metaParser):
-    m = parser(src)
-    print(f"{'❌' if m is None else '✅'} {src}")
-#pparse('a <- a boo <- a')
-#pparse('a <- a*')
-#pparse('"abc"', genParser(G, 'literal'))
-#pparse('a <- "a"', metaParser)
-for line in metaGrammar.splitlines():
-    ptest(line)
-ptest()
-# for a in trim(metaGrammar, metaParser(metaGrammar)):
-#     print(fmtAst(a))
-newG = grammarFromPEG(metaGrammar)
-#print(toPEG(G))
-print()
-print(metaGrammar)
-for k,newv in newG.items():
-    oldv = G[k]
-    print()
-    print(f"{k} <- {toPEG(oldv)}")
-    print(oldv)
-    print(newv)
-    assert oldv == newv
-assert newG == G
+# TODO __all__ = ['metaGrammar', 'metaParser', 'genParser']
+
+# TESTS
+
+def test_meta():
+    """
+    this is proof of the fixed point grammar.
+    """
+    newG = grammarFromPEG(metaGrammar)
+    assert isinstance(newG, dict), 'failed to parse meta grammar'
+    for k,newv in newG.items():
+        oldv = G[k]
+        rulePEG = f"{k} <- {toPEG(oldv)}"
+        assert oldv == newv, rulePEG
+    assert newG == G
+
+def test_tbd():
+    # TODO tests to implement
+    # test char `[-]`
+    pass
+
+def test_fmt():
+    test_node = node(0, 5, node(0,1), node(1,2, label='op'), node(2, 5, node(2, 3), node(3,4, label='op'), node(4,5), label='mul'), label='add')
+    assert fmtMatch('1+2*3',test_node) == """add:'1+2*3'
+├'1'
+├op:'+'
+└mul:'2*3'
+ ├'2'
+ ├op:'*'
+ └'3'"""
+
+if __name__ == "__main__":
+    import pytest
+    pytest.main([__file__])
