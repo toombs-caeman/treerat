@@ -51,7 +51,7 @@ Only a few of these have actually been completed.
         * loading source files
         * loading intermedite artifacts (IR). What is the on-disk representation?
         * fetch libraries from urls? expect them at a hardcoded file location?
-
+        * shebang convention to automatically run source file as an interpreter (as bash does).
 * [compiler drivers](https://fabiensanglard.net/dc/index.php) - the user interface for a language
     * bind together a specific grammar, parser, analyzer, optimizer, loader and evaluator into a complete language toolchain
     * REPL?
@@ -76,14 +76,14 @@ TODO:
     * arm/x86 assembler
     * allow cross compiling
     * write a forth in assembly
-    * write linter / 
+    * write linter
+    * [python assembler](https://github.com/adhamhaithameid/Assembler-with-python)
+
 * bootstrap
     1. existing assembler (armclang)
     2. assembler in assembly (fixed point)
     3. forth in assembly
     4. forth in forth (fixed point)
-    5. 
-* assembler
 
 # Parser
 
@@ -187,6 +187,7 @@ I have a bunch of ideas for 'micro' languages which would be greatly aided by th
   * [TOML](https://github.com/toml-lang/toml)
   * [YAML](https://yaml.org/), or pseudo-INI
   * [Tablatal / Indental](https://wiki.xxiivv.com/site/tablatal.html)
+  * json/bson
 
 * a data query format
   * [dasel](https://github.com/TomWright/dasel)
@@ -210,6 +211,7 @@ I have a bunch of ideas for 'micro' languages which would be greatly aided by th
     * how should utilization of a function be visualized in a debugging context?
     * expected data size?
     * expected runtime? to flag functions that are underperforming
+
 * inline snapshot testing
 * can name everything, don't have to name anything
     * DeBrujin naming
@@ -221,12 +223,13 @@ I have a bunch of ideas for 'micro' languages which would be greatly aided by th
 * representing state machines such that transition diagrams can be automatically generated, and properties statically analyzed?
 * 'return a mutation object' as a model for 'pure' functions with the program state as input, and a new state as output. (equivalent to transactions?)
 * trait-based type heirarchy
+* dependant types
 * language language to sql (python+sql+apl)
 * packages published as source under git, use semver git tags to publish version so there's no separate packaging mechanism. The package name is the host url (sans http://)
 * toolchain/compiler/interpreter/linter/etc should be a single binary file
 * how to resolve incompatible libraries? do we allow multiple versions of the same libraries. how can we have 'virtual env' to capture the dependencies of just the current project in a separate tree.
 * a 'binary' is a frozen and trimmed program state (trim to reachable code from entry point and exec) or have multiple entrypoints bundled like busybox
-* shebang convention to automatically run source file as an interpreter (as bash does).
+    * similar to forth
 * language primitives exposing heap/stack differences, or other low level concepts should not be 'default'. The default numeric type should be bignum, but let `u32` be specified. default sequence type should be a vector (variable size/type), but allow array (const size, uniform type) be specified.
 * separate language into high and low level primitives, high level primitives are expressible multiple ways using low level primitives, chosen by static analysis and optimization level (for example [] would mean 'any sequence' unless given an explicit annotation, depending on usage it could compile to array or a vector).
 * high level types are collections of traits, any low level structure which implements those traits may be used at compile time
@@ -294,6 +297,7 @@ I have a bunch of ideas for 'micro' languages which would be greatly aided by th
 * [weathering the software winter](https://100r.co/site/weathering_software_winter.html) a discussion of why you might want to be fully in control of your software stack.
 * [Xu Bing’s Book from the Ground](https://www.xubing.com/en/work/details/188?classID=12&type=class) on the dissociation of syntax and semantics
 
+* implementing async/coroutines
 * [heartbeat scheduler](https://www.andrew.cmu.edu/user/mrainey/heartbeat/heartbeat.html)
     * [spice](https://news.ycombinator.com/item?id=41230344)
 * [austral](https://github.com/austral/austral/)
@@ -333,7 +337,9 @@ I have a bunch of ideas for 'micro' languages which would be greatly aided by th
 
 * [LSP](https://microsoft.github.io/language-server-protocol/overviews/lsp/overview/)
     * [lsp tutorial](https://prefab.cloud/blog/lsp-language-server-from-zero-to-completion/)
-[bruijn language](https://text.marvinborner.de/2023-04-06-01.html)
+    * [DAP](https://microsoft.github.io/debug-adapter-protocol/)
+    * a generic implementation?
+[bruijn language](https://bruijn.marvinborner.de/)
 [io language](https://iolanguage.org/about.html)
 
 * [economics of programming languages](https://youtu.be/XZ3w_jec1v8)
