@@ -1,18 +1,16 @@
 from collections import namedtuple
-from typing import NamedTuple, Self
+from typing import Iterable, NamedTuple, Self
+from base2 import ast
 
 """
 a description parsing expression grammars for parsing generators
 
+TODO docstrings with definitions, motivation
+
 https://en.wikipedia.org/wiki/Parsing_expression_grammar
 """
 
-# TODO __all__
-
-# TODO docstrings with definitions
-# TODO move meta grammar here
-
-# TODO serializers
+# TODO serializers? as a way to load/restore grammars
 # struct + base64?
 # json with custom encoder?
 # https://docs.python.org/3/library/base64.html
@@ -41,11 +39,11 @@ def unescape(s:str) -> str:
 
 class Grammar(dict):
     @classmethod
-    def meta(cls) -> Grammar:
+    def meta(cls) -> 'Grammar':
         # TODO align labels here with names of namedtuple types
         G = cls()
         G['grammar'] = seq(ref('sp'), zed(ref('definition')), no(dot()))
-        G['definition'] = label('rule',seq(ref('identifier'), lit('<-'), ref('sp'), ref('E')))
+        G['definition'] = label('definition',seq(ref('identifier'), lit('<-'), ref('sp'), ref('E')))
         G['EOL'] = first(lit('\r\n'), lit('\n'), lit('\r'))
         G['comment'] = seq(lit('#'), zed(seq(no(ref('EOL')), dot())), ref('EOL'))
         G['sp'] = zed(first(lit(' '), lit('\t'), ref('EOL'), ref('comment')))
@@ -75,10 +73,10 @@ class Grammar(dict):
         ), ref('sp'))
         q = lit("'")
         qq = lit('"')
-        G['lit'] = seq(label('lit', first(
-            seq(q, zed(seq(no(q), ref('char'))), q),
-            seq(qq, zed(seq(no(qq), ref('char'))),qq)
-        )), ref('sp'))
+        G['lit'] = seq( first(
+            seq(q, label('lit',zed(seq(no(q), ref('char')))), q),
+            seq(qq, label('lit',zed(seq(no(qq), ref('char')))), qq),
+        ), ref('sp'))
         G['E'] = first( # choice/first
             label('first',seq(ref('E'), lit('/'), ref('sp'), ref('E1'))),
             ref('E1')
@@ -106,8 +104,40 @@ class Grammar(dict):
             label('dot', seq(lit('.'), ref('sp'))),
             seq(lit('('), ref('sp'), ref('E'), lit(')'), ref('sp')),
         )
+        G.validate()
         return G
 
+    @classmethod
+    def from_ast(cls, a:Iterable[ast]) -> 'Grammar':
+        g = Grammar()
+        kernel = {f.__name__:f for f in [ref, label, char, seq, first, no, zed, one, opt, yes]}
+        kernel['definition'] = g.__setitem__
+        kernel['identifier'] = lambda x:x
+        kernel['dot'] = lambda _:dot()
+        kernel['lit'] = lambda s:lit(unescape(s))
+        kernel['crange'] = lambda s:unescape(s)[::2]
+        def eval(a:ast|str):
+            if isinstance(a, str):
+                return a
+            return kernel[a[0]](*map(eval, a[1:]))
+        # run kernel
+        for rule in a:
+            eval(rule)
+        return g
+
+    def eliminate_left_recursion(self):
+        # https://www.geeksforgeeks.org/dsa/removing-direct-and-indirect-left-recursion-in-a-grammar/
+        # TODO identify sources of indirect left recursion
+        # TODO convert all indirect left recursion into direct left recursion
+        # TODO eliminate direct left recursion
+        raise NotImplementedError()
+
+    def validate(self):
+        # TODO detect ref to undefined rule
+        # detect `a <- a`, which is ill-defined.
+        for k,v in self.items():
+            if isinstance(v, ref) and v.name == k:
+                raise ValueError(f"rule {k} is ill-defined (rule in form `a <- a`).")
     @property
     def peg(self) -> str:
         return '\n'.join(
@@ -132,7 +162,12 @@ class lit(NamedTuple):
     def escape(cls, s:str) -> str:
         # TODO this isn't perfect
         # doesn't handle octal values for example
-        t = {'\n':'\\n', '\t':'\\t', '\r':'\\r', '\\':r'\\',}
+        t = {
+            '\n':r'\n',
+            '\t':r'\t',
+            '\r':r'\r',
+            '\\':r'\\',
+        }
         return ''.join(t.get(c, c) for c in s)
 
 #TODO NamedTuple doesn't play nice with overriding __new__
@@ -148,7 +183,7 @@ class char(namedtuple('char', ['invert', 'spec'])):
         c = ['^' if self.invert else '']
         for rule in self.spec:
             if len(rule) == 1:
-                c.append(char.escape(rule))
+                c.append(rule)
             else:
                 c.extend((rule[0], '-', rule[-1]))
         return f"[{''.join(map(char.escape, c))}]"
@@ -175,7 +210,7 @@ class label(NamedTuple):
     def peg(self) -> str:
         return f"{self.name}:{self.inner.peg}"
 
-class seq(namedtuple('seq', ['inner'])):
+class seq(tuple):
     """match inner clauses sequentially."""
     def __new__(cls, *inner:clause) -> clause:
         match len(inner):
@@ -191,13 +226,15 @@ class seq(namedtuple('seq', ['inner'])):
                         c.extend(x)
                     else:
                         c.append(x)
-                return super().__new__(cls, tuple(c))
+                return super().__new__(cls, c)
+    def __str__(self) -> str:
+        return f"{type(self).__name__}{super().__str__()}"
     @property
     def peg(self) -> str:
-        return f"({' '.join(x.peg for x in self.inner)})"
+        return f"({' '.join(x.peg for x in self)})"
 
 
-class first(namedtuple('first', ['inner'])):
+class first(tuple):
     """match on the first matching inner clause."""
     def __new__(cls, *inner:clause) -> clause:
         match len(inner):
@@ -213,10 +250,13 @@ class first(namedtuple('first', ['inner'])):
                         c.extend(x)
                     else:
                         c.append(x)
-                return super().__new__(cls, tuple(c))
+                return super().__new__(cls, c)
+
+    def __str__(self) -> str:
+        return f"{type(self).__name__}{super().__str__()}"
     @property
     def peg(self) -> str:
-        return f"({' / '.join(x.peg for x in self.inner)})"
+        return f"({' / '.join(x.peg for x in self)})"
 
 class no(NamedTuple):
     """match if the inner clause doesn't."""

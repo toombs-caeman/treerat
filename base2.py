@@ -1,33 +1,50 @@
-from asyncio import Queue, TaskGroup, run
-from typing import  Callable, Generator, Iterable
-from asyncio import Queue, TaskGroup, run
+"""
+defines the interface between various parts of the treerat project
+
+TODO what is the overall structure of language components and how they interact? Kinda need to know now
+
+TODO
+protocol classes describe the interface, but should also implement the dumbest possible version of that interface.
+
+protocols
+* parser
+* parser generator
+* async core
+* cli driver
+* debugger
+* visualizer
+* linter
+* lsp
+* formatter
+
+types
+* match - parser output
+* ast
+* debug symbol?
+
+exceptions
+except Thing as e:
+    raise Exception('msg') from e
+
+* prefer typing.Protocol over ABC
+    * https://docs.python.org/3/library/typing.html#typing.Protocol
+    * with @runtime_checkable
+* typing.NamedTuple
+"""
+
+from typing import  Generator, Iterable, NamedTuple, Protocol, runtime_checkable
 from typing import  Generator, Iterable
-from asyncio import Queue, QueueShutDown, TaskGroup, run
-import asyncio
-from typing import  Callable, Generator, Iterable
-from dataclasses import dataclass, field
-from abc import ABC, abstractmethod
 
-# TODO linter
-type linter = Callable[[str], str]
+class ParseError(SyntaxError):
+    """raised if a parser fails on input."""
+    # read up on how to pass details
+    #https://docs.python.org/3/library/exceptions.html#SyntaxError
 
-class ParseError(Exception):
-    """raised if a parser fails on input while in strict mode."""
+class EvalError(RuntimeError):
+    """raised if an evaluator fails unexpectedly."""
 
-class CompileError(Exception):
+class CompileError(EvalError):
     """raised if compile step fails unexpectedly."""
-    # basically, and error in initializing
-
-class EvalError(Exception):
-    """
-    raised if an evaluator fails unexpectedly.
-
-    for example if the input ast is invalid.
-    """
-
-class EvalAwaitInput(EvalError):
-    """raised if an evaluator has consumed its input."""
-    # TODO this is probably better served by using a Queue
 
 class EvalShutdown(EvalError):
     """The evaluator has reached a halt instruction."""
@@ -35,267 +52,121 @@ class EvalShutdown(EvalError):
 class BreakPoint(EvalError):
     """The evaluator has reached a breakpoint"""
 
-type ast = tuple[str, *tuple[ast|str]]
-# tuple[style, content]
-type lexen = tuple[str, str]
-
-type Optimizer[X] = Callable[[X], X]
-
-type stdin = asyncio.Queue[str]
+type ast = tuple[str, *tuple[ast|str,...]]
+class lexen(NamedTuple):
+    style: str
+    content: str
 
 # TODO how do we handle continuable ParseErrors
 # do we need batch/interactive modes for parsing, evaluation?
 
-@dataclass(slots=True, frozen=True)
-class match:
+class match(NamedTuple):
     """
     representing a parsing match
     """
     start:int
     stop:int
     label:str = ''
-    content:'tuple[match,...]' = field(default_factory=tuple)
-    def toAst(self, src:str) -> Generator[ast]:
+    content:'tuple[match,...]' = ()
+    def ast(self, src:str) -> Generator[ast]:
         if self.label:
             content = []
             for c in self.content:
-                content.extend(c.toAst(src))
+                content.extend(c.ast(src))
             if content:
                 yield self.label, *content
             else:
                 yield self.label, src[self.start:self.stop]
         else:
             for c in self.content:
-                yield from c.toAst(src)
+                yield from c.ast(src)
 
+# TODO extract generic fmtTree
+def fmtMatch(src, n:match, *, prefix:str='', next_p=''):
+    label, start, stop, content = n
+    out = [
+        f"{prefix}{next_p}{label}{':' if label else ''}{src[start:stop]!r}"
+    ]
+    match next_p:
+        case '├':
+            prefix += '│'
+        case '└':
+            prefix += ' '
+    if content:
+        for c in content[:-1]:
+            out.append(fmtMatch(src, c, prefix=prefix, next_p='├'))
+        out.append(fmtMatch(src, content[-1], prefix=prefix, next_p='└'))
+    return '\n'.join(out)
 
-class namespace:
-    def __init__(self, nro:list[dict]|None=None):
-        self.__nro = nro or [{}]
-        # TODO what if it was nro[name, dict[depth, value]]
-        # def get(key):
-        #       defs = nro[key]
-        #       return defs[max(*defs)]
-        # 
+def fmtAst(a:ast|str, *, prefix='', next_p=''):
+    match a:
+        case str():
+            return f"{prefix}{next_p}{a!r}"
+        case _:
+            out = [f"{prefix}{next_p}{a[0]}"]
+            match next_p:
+                case '├':
+                    prefix += '│'
+                case '└':
+                    prefix += ' '
+            if a[1:]:
+                for c in a[1:-1]:
+                    out.append(fmtAst(c, prefix=prefix, next_p='├'))
+                out.append(fmtAst(a[-1], prefix=prefix, next_p='└'))
+            return '\n'.join(out)
 
-    def __getitem__(self, key:str):
-        return self.__get(key, slice(None))
+@runtime_checkable
+class Parser(Protocol):
+    def parse(self, text:str) -> match:
+        raise ParseError('protocol not implemented')
 
     @property
-    def global_(self):
-        return self.__nro[0]
-
-    def __get(self, key, sl:slice):
-        for ns in reversed(self.__nro[sl]):
-            if key in ns:
-                return ns[key]
-        raise NameError(key)
-
-    def __contains__(self, key):
-        return any(key in n for n in self.__nro)
-
-    def __setitem__(self, key, value):
-        self.__nro[-1][key] = value
-
-    def __enter__(self):
-        self.__nro.append({})
-        return self
-
-    def __exit__(self, *_):
-        return self.__nro.pop()
-    def hoist(self, *names, levels=1):
-        # move a key up the nro
-        raise NotImplemented
-
-class Visualizer(ABC):
-    """Base class for graph visualizations."""
-    wait  = 'black' # computation is not ready, black is the default color
-    ready = 'blue'  # computation is ready to proceed
-    active= 'green' # computation is active during this step
-    done  = 'gray'  # computation is complete
-    error = 'red'   # computation halted
-
-    @abstractmethod
-    def add_frame(self, data=None):
-        """add a new frame to the animation."""
-
-    @abstractmethod
-    def attr(self, __t, __h=None, /, **attrs):
-        """add attributes to node or edge."""
-
-class NoVis(Visualizer):
-    """Stub for when visualization is turned off."""
-    def noop(self, *args, **kwargs):
-        """don't do anything"""
-    attr = add_frame = noop
-    def __getattr__(self, name):
-        return self.noop
-    def __bool__(self):
-        return False
-
-class ParseVis(Visualizer):
-    """visualizer for parsers"""
-    pass
-    
-class Parser(ABC):
-    """Base class for parsers."""
-    @abstractmethod
-    def __call__(self, text:str, vis:Visualizer=NoVis()) -> match:
-        pass
-
-    def lex(self, text:str, style=None) -> Iterable[lexen]:
-        # TODO is this ok?
-        raise NotImplementedError()
-
-    @abstractmethod
-    def allKinds(self) -> set[str]:
+    def kinds(self) -> set[str]:
         """return all ast node kinds which could be generated by this parser."""
-        # all non-empty labels
-        # this is used to statically analyze compatibility between parser and evaluator
+        return set()
 
-class Evaluator(ABC):
+@runtime_checkable
+class Lexer(Protocol):
+    def lex(self, text:str) -> Iterable[lexen]:
+        return [lexen('', text)]
+
+@runtime_checkable
+class Compiler(Protocol):
+    def compile(self, a:Iterable[ast]) -> ast:
+        return ('main', *a)
+
+@runtime_checkable
+class Evaluator(Protocol):
+    """Evaluate an abstract syntax tree.
+
+    This version is a treewalk evaluator where ast nodes are implemented as methods on the class.
+    Methods receive unevalutated ast|str as arguments.
     """
-    Base class for evaluators.
-
-    In general an evaluator embodies the semantics of a language.
-    Each evaluator receives an AST and does the computation represented by the AST.
-    Subclasses of Evaluator should implement the __call__() method to do this.
-
-    As a general pattern (not all evaluators have to do this), each recognized type of node
-    should have a corresponding method in the evaluator to implement the semantics of that node.
-    This makes it relatively straightforward to extend an Evaluator through subclassing.
-
-    Evaluators should raise a RuntimeError if the ast they receive is invalid.
-
-    vis is an optional visualizer, if present, each step of computation should be shown.
-    """
-    def __init__(self, ast:Iterable[ast], vis:Visualizer=NoVis()):
-        """
-        init should run compilation if the evaluator supports it
-        """
-        self._vis = vis
-        self.accept_input(ast)
-
-    @abstractmethod
-    def allKinds(self) -> set[str]:
-        """return all ast node kinds which can be handled."""
-        # this is used to statically analyze compatibility between parser and evaluator
-
-    @abstractmethod
-    def step(self):
-        """
-        process a single *step*, the meaning of this is defined by the evaluator specific
-        """
-        raise EvalError('not implemented')
-    # TODO step_into, step_over, step_out
-    # TODO use asyncio.Event as breakpoint
-
-    # TODO should this be async instead?
-    # asyncio.Queue[ast]
-    def request_input(self):
-        raise EvalAwaitInput()
-    @abstractmethod
-    def accept_input(self, ast:Iterable[ast]):
-        """accept new ast to evaluate."""
-
-class LanguageDriver(ABC):
-    parser:Parser
-    evaluator:Evaluator
-    prompt = '> '
-
-    @abstractmethod
-    @classmethod
-    def from_sysargs(cls) -> 'LanguageDriver':
-        """
-        construct a language driver from cli arguments.
-
-        the intended use is:
-        if __name__ == "__main__":
-            LanguageDriver.from_args().run()
-        """
-
-    @abstractmethod
-    async def get_user_input(self) ->str:
-        """get a line of user input."""
-        raise NotImplementedError()
-
-    @abstractmethod
-    async def handleInterrupt(self) -> bool:
-        return True
-
-    async def input(self, stdin:Queue[str]):
-        shouldShutdown = False
-        while not shouldShutdown:
-            try:
-                await stdin.put(await self.get_user_input())
-            except EOFError:
-                shouldShutdown = True
-            except KeyboardInterrupt:
-                shouldShutdown = await self.handleInterrupt()
-        stdin.shutdown()
-
-    async def parse(self, stdin:Queue[str], stdast:Queue[ast], stderr:Queue[Exception]):
-        try:
-            while True:
-                try:
-                    src = await stdin.get()
-                    for a in self.parser(src).toAst(src):
-                        await stdast.put(a)
-                except ParseError as e:
-                    await stderr.put(e)
-                finally:
-                    stdin.task_done()
-        except QueueShutDown:
-            stdast.shutdown()
-
-    async def eval(self, stdast: Queue[ast], stdout: Queue[lexen], stderr: Queue[Exception]):
-        #TODO
-        self.evaluator
-
-    async def run_async(self):
-        stdin: Queue[str] = Queue()
-        stdast: Queue[ast] = Queue()
-        stdout: Queue[lexen] = Queue()
-        stderr: Queue[Exception] = Queue()
-        async with TaskGroup() as tg:
-            input = tg.create_task(self.input(stdin))
-            parse = tg.create_task(self.parse(stdin, stdast, stderr))
-            eval = tg.create_task(self.eval(stdast, stdout, stderr))
-            output = tg.create_task(self.output(stdout, stderr))
-
-    def run(self):
-        run(self.run_async())
-
-    def repl(self):
-        """
-        A stock standard read eval print loop (REPL).
-
-        This doesn't let you input multi-line expressions,
-        since there's no good way to detect that should be done from the grammar.
-        """
-        # TODO replace this mess with prompt_toolkit.PromptSession
-        # but not PromptSession, because I want to use prompt_toolkit to also run the visualiser
-        try:
-            import readline
-        except ImportError:
-            pass
-        # loop
-        while True:
-            try:
-                # read then eval
-                value = self(input(self.prompt))
-                # print
-                if value is not None:
-                    print(value)
-            except (ParseError, CompileError, EvalError) as e:
-                print(e)
-            except (KeyboardInterrupt, EOFError):
-                break
-
-
-class keval(Evaluator):
-    """A treewalk evaluator where ast nodes are implemented as methods on the class."""
-    # TODO instrument with breakpoints
     def __call__(self, ast:ast):
         fname, *args = ast
         return getattr(self, fname)(*args)
+
+@runtime_checkable
+class DebuggableEvaluator(Protocol):
+    # TODO step, step_into, step_over, step_out
+    def step(self):
+        raise EvalError('proto not implemented')
+    def step_into(self):
+        raise EvalError('proto not implemented')
+    def step_over(self):
+        raise EvalError('proto not implemented')
+    def step_out(self):
+        raise EvalError('proto not implemented')
+    def breakpoint(self, clear=False):
+        raise EvalError('proto not implemented')
+
+
+class Driver(Protocol):
+    def start_core(self):
+        pass
+    def input(self):
+        """get a line of user input."""
+        return input('> ')
+    def output(self, text):
+        print(text)
+
