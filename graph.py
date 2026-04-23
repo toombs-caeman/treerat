@@ -12,6 +12,9 @@ a datastructure representing a directed graph, to allow graph rewriting operatio
 # TODO
 * visualize with pygraphiz
 
+* libraries do this
+    * egglog https://egglog-python.readthedocs.io/latest/explanation/2023_07_presentation.html
+        * python bindings for rust library
 
 # ref
     [PBPO+](https://www.youtube.com/watch?v=yajQ6gkFEHY)
