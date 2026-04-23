@@ -1,18 +1,20 @@
 """
 represent PEG in a normalized form, graph reduction engine?
-
 """
 from collections import defaultdict
 from functools import cache, cached_property
 from enum import IntEnum
+from typing import Iterable
+
+from base2 import ast
 
 
 class T(IntEnum):
-    # this also encodes operator precedence
+    # this also encodes operator precedence (for Grammar.peg())
     # terminal
     dot = 0  # .
-    cls = 1  # []
-    icls = 2 # [^]
+    char = 1  # []
+    ichar = 2 # [^]
     lit = 3  # ""
     # non-terminal
     label = 4# label:
@@ -25,16 +27,32 @@ class T(IntEnum):
     first = 11# /
 
 # TODO expand character ranges, deduplicate
-# return [T.cls, ''.join({chr(x) for s in spec for x in range(ord(s[0]), ord(s[-1])-1)})]
+# return [T.char, ''.join({chr(x) for s in spec for x in range(ord(s[0]), ord(s[-1])-1)})]
+def unescape(s:str) -> str:
+    """convert escaped strings to their non-escaped form."""
+    # TODO handle octal values
+    for old, new in (
+        (r'\n', '\n'),
+        (r'\r', '\r'),
+        (r'\t', '\t'),
+        (r'\[', '['),
+        (r'\]', ']'),
+        (r'\"', '"'),
+        (r"\'", "'"),
+        (r'\\','\\'),
+    ):
+        s = s.replace(old, new)
+    return s
+
 
 def dot():
     return [T.dot]
-def cls(*spec):
+def char(*spec):
     assert all(0 < len(s) <= 2 for s in spec)
-    return [T.cls, *spec]
-def icls(*spec):
+    return [T.char, *spec]
+def ichar(*spec):
     assert all(0 < len(s) <= 2 for s in spec)
-    return [T.icls, *spec]
+    return [T.ichar, *spec]
 def lit(s):
     return [T.lit, s]
 def label(name, term):
@@ -114,7 +132,7 @@ class Grammar(dict):
                 return
             memo.add(id(n))
             match n:
-                case [T.dot | T.lit | T.cls | T.icls, *_]:
+                case [T.dot | T.lit | T.char | T.ichar, *_]:
                     pass
                 case [T.seq|T.first, left, right]:
                     yield from dfs(left)
@@ -143,7 +161,7 @@ class Grammar(dict):
                 return
             memo.add(id(n))
             match n:
-                case [T.dot | T.lit | T.cls | T.icls, *_]:
+                case [T.dot | T.lit | T.char | T.ichar, *_]:
                     return
                 case [T.first, left, right]:
                     return dfs(left) or dfs(right)
@@ -183,7 +201,7 @@ class Grammar(dict):
             ret = None
             memo[id(n)] = ret
             match n:
-                case [T.dot | T.lit | T.cls | T.icls, *_]:
+                case [T.dot | T.lit | T.char | T.ichar, *_]:
                     ret = False
                 case [T.first, left, right]:
                     ret = dfs(left) or dfs(right)
@@ -206,7 +224,7 @@ class Grammar(dict):
         out = defaultdict(list)
         for n in self.terms():
             match n:
-                case [T.dot | T.lit | T.cls | T.icls, *_]:
+                case [T.dot | T.lit | T.char | T.ichar, *_]:
                     pass
                 case [T.seq|T.first, left, right]:
                     out[id(left)].append(n)
@@ -225,7 +243,7 @@ class Grammar(dict):
                     #self._replace(oldTerm, newTerm)
                     for p in self.parents[id(oldTerm)]:
                         match p:
-                            case [T.dot | T.lit | T.cls | T.icls, *_]:
+                            case [T.dot | T.lit | T.char | T.ichar, *_]:
                                 raise ValueError('terminal is supposedly a parent')
                             case [T.seq|T.first, left, right]:
                                 if left == oldTerm:
@@ -291,17 +309,17 @@ class Grammar(dict):
                     self._replace(t, lit(f"{a}{b}"))
                 case [T.first, [T.lit, a], [T.lit, b]] if len(a) == len(b) == 1:
                     # 'a' / 'b' -> [ab]
-                    self._replace(t, cls(a, b))
-                case [T.first, [T.cls, *spec], [T.lit, b]] | \
-                     [T.first, [T.lit, b], [T.cls, *spec]] if len(b) == 1:
+                    self._replace(t, char(a, b))
+                case [T.first, [T.char, *spec], [T.lit, b]] | \
+                     [T.first, [T.lit, b], [T.char, *spec]] if len(b) == 1:
                     # [a] / 'b' -> [ab]
                     #  'b' / [a] -> [ab]
-                    self._replace(t, cls(*spec, b))
+                    self._replace(t, char(*spec, b))
                 case [T.zed, a]:
                     name = self._getname('REP')
                     self[name] =first(seq(a, self[name]), self._) 
                     self._replace(t, self[name])
-                #TODO normalize cls spec
+                #TODO normalize char spec
                 #TODO (a b) c -> a (b c)
                 #TODO (a / b) / c -> a / (b / c)
 
@@ -332,13 +350,13 @@ class Grammar(dict):
         match expr:
             case [T.dot]:
                 out = '.'
-            case [T.cls, *spec] | [T.icls, *spec]:
+            case [T.char, *spec] | [T.ichar, *spec]:
                 # TODO do better
                 def escape(x):
                     if x == ']':
                         return r'\]'
                     return repr(x)[1:-1]
-                inv = '^' if expr[0] == T.icls else ''
+                inv = '^' if expr[0] == T.ichar else ''
                 spec = ''.join(
                     f"{escape(x[0])}-{escape(x[-1])}"
                     if len(x) > 1 else escape(x)
@@ -378,13 +396,13 @@ class Grammar(dict):
         G['comment'] = seq(lit('#'), zed(seq(no(G['EOL']), dot())), G['EOL'])
         G['sp'] = zed(first(lit(' '), lit('\t'), G['EOL'], G['comment']))
         G['char'] = first(
-            seq(lit('\\'), cls(*"nrt'\"[]\\")),
-            seq(lit('\\'), cls('02'), cls('07'), cls('07')),
-            seq(lit('\\'), cls('07'), opt(cls('07'))),
+            seq(lit('\\'), char(*"nrt'\"[]\\")),
+            seq(lit('\\'), char('02'), char('07'), char('07')),
+            seq(lit('\\'), char('07'), opt(char('07'))),
             seq(no(lit('\\')), dot()),
         )
         G['class'] =  seq(
-            label('cls', seq(
+            label('char', seq(
                 lit('['), zed(seq(
                     no(lit(']')),
                     # TODO don't love this
@@ -399,7 +417,7 @@ class Grammar(dict):
         )
         G['identifier'] = seq(label(
             'identifier',
-            seq(cls('az', 'AZ', '_'), zed(cls('az', 'AZ', '_', '09'))),
+            seq(char('az', 'AZ', '_'), zed(char('az', 'AZ', '_', '09'))),
         ), G['sp'])
         q = lit("'")
         qq = lit('"')
@@ -435,6 +453,24 @@ class Grammar(dict):
             seq(lit('('), G['sp'], G['E'], lit(')'), G['sp']),
         )
         return G
+    @classmethod
+    def from_ast(cls, a:Iterable[ast]) -> 'Grammar':
+        g = Grammar()
+        kernel = {f.__name__:f for f in [label, char, seq, first, no, zed, one, opt, yes]}
+        kernel['definition'] = g.__setitem__
+        kernel['identifier'] = lambda x:x
+        kernel['dot'] = lambda _:dot()
+        kernel['lit'] = lambda s:lit(unescape(s))
+        kernel['crange'] = lambda s:unescape(s)[::2]
+        kernel['ref'] = lambda s:g[s]
+        def eval(a:ast|str):
+            if isinstance(a, str):
+                return a
+            return kernel[a[0]](*map(eval, a[1:]))
+        # run kernel
+        for rule in a:
+            eval(rule)
+        return g
 
 
 def test_lr():
@@ -449,6 +485,8 @@ def test_lr():
     print('after', g)
     print('goal', g)
     assert str(g) == str(goal)
+
+    assert False, 'TODO indirect case'
 
 def test_peg():
     # TODO don't use meta, since it could change

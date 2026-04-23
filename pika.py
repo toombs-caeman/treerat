@@ -49,7 +49,7 @@ This is essentially emulating a tagged union, and translates very directly to a 
 from collections import defaultdict
 from enum import IntEnum
 import heapq
-from base2 import ParseError, match
+from base2 import ParseError, Parser, match
 from grammar import *
 
 # types for internal index format
@@ -359,6 +359,9 @@ def test_meta():
         rulePEG = f"{k} <- {defined[k].peg}"
         assert defined[k] == calc[k], rulePEG
     assert defined == calc
+
+def test_proto():
+    assert isinstance(Pika(), Parser)
 
 if __name__ == "__main__":
     import pytest

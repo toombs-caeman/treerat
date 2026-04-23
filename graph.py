@@ -1,123 +1,94 @@
-from base import *
-import networkx as nx
+"""
+a datastructure representing a directed graph, to allow graph rewriting operations
 
+# patch graph rewriting aka PBPO+
+* need multigraph with labeled edges
+    * labels form a lattice
+* edge labels can encode type?
+* a target is a graph of MatchNodes
+    * MatchNode.match(Node) -> bool:
+* a match is a mapping of all nodes and edges in the input graph to the target
+
+# TODO
+* visualize with pygraphiz
+
+
+# ref
+    [PBPO+](https://www.youtube.com/watch?v=yajQ6gkFEHY)
+    [egg](https://docs.rs/egg/latest/egg/tutorials/_01_background/index.html)
+"""
 from dataclasses import dataclass
-
-
-class Graph(Evaluator):
-    """
-    a base graph optimizer and evaluator
-
-    subclasses should define compile(ast) -> nx.Digraph
-    Where each node is a function and each edge represents a dependency.
-    Each function will be called a set of incoming edges and a set of outgoing edges.
-    outgoing edges must be marked 'ok' if the computation should proceed in that direction.
-
-    Nodes are eligible to run if they have no incoming edges, or if all incoming edges are 'ok'
-
-    The order of node execution depends only on the edges.
-    compile() may call optimize(G) to make use of general graph-level optimizations.
-    """
-    def __init__(self, ast:node|None=None):
-        self.graph = None if ast is None else self.compile(ast)
-
-    def __call__(self, ast:node|None=None, vis:Visualizer|None=None):
-        if ast is None:
-            if self.graph is None:
-                raise ValueError("don't have any code to run")
-            G = self.graph.copy()
-        else:
-            G = self.compile(ast)
-
-        return self.run(G, vis)
-
-    #@abc.abstractmethod
-    def compile(self, ast:node) -> nx.DiGraph:
-        """compile ast into a graph."""
-        # TODO convert ast to graph here
-        #   make sure to call self.optimize for optimization
-        raise NotImplemented
-
-    def optimize(self, G:nx.DiGraph):
-        """Do graph level optimization."""
-        # cull the graph to the subset needed to compute targets
-        needed = set()
-        for n in G.nodes(target=True):
-            needed |= n.ancestors()
-        G = nx.induced_subgraph(G, needed)
-        if not nx.is_directed_acyclic_graph(G):
-            raise CompileError('cycle detected in computation graph.')
-        return G
-
+from typing import Callable, NamedTuple, Self
+# TODO patch graph rewriting
+type halflink[T] = set[Node[T]]
+class Node[T]:
+    __slots__ = 'data', 'down', 'up'
+    def __init__(self, data: T, down: halflink[T]|None = None, up: halflink[T]|None = None):
+        self.data = data
+        self.down:halflink[T] = set()
+        self.up:halflink[T] = set()
+        if down:
+            self.dupdate(down)
+        if up:
+            self.uupdate(up)
+    def validate(self):
+        # all bidirectional links are maintained
+        assert all(self in u.down for u in self.up)
+        assert all(self in d.up for d in self.down)
     def clear(self):
-        """clear and reset computation graph."""
+        self.uclear()
+        self.dclear()
+    def uclear(self):
+        for u in self.up:
+            u.down.remove(self)
+        self.up.clear()
+    def dclear(self):
+        for d in self.down:
+            d.up.remove(self)
+        self.down.clear()
+    def uadd(self, other:Self):
+        other.down.add(other)
+        self.up.add(self)
+    def uremove(self, other:Self):
+        other.down.remove(other)
+        self.up.remove(self)
+    def uupdate(self, other:halflink[T]):
+        self.up.update(other)
+        for o in other:
+            o.down.add(self)
+    def dupdate(self, other:halflink[T]):
+        self.down.update(other)
+        for o in other:
+            o.up.add(self)
+    def dadd(self, other:Self):
+        other.up.add(self)
+        self.down.add(other)
+    def dremove(self, other:Self):
+        other.up.remove(self)
+        self.down.remove(other)
+    def unify(self, *others:'Node[T]', select=(lambda d, *_:d)):
+        self.uupdate(*(o.up for o in others))
+        self.dupdate(*(o.down for o in others))
+        self.data = select(self.data, *(o.data for o in others))
+        for o in others:
+            o.clear()
+    __lshift__ = uadd
+    __rshift__ = dadd
 
-    def run(self, G:nx.DiGraph, vis:Visualizer|None=None):
-        """execute the computation graph."""
-        G = G.copy()
-        for n in nx.topological_sort(G):
-            if vis:
-                for e in G.in_edges(n):
-                    G.edges[e]['color'] = vis.active
-                G.nodes[n]['color'] = vis.active
-                vis.add_frame(G)
-                for e in G.in_edges(n):
-                    G.edges[e]['color'] = vis.done
-                G.nodes[n]['color'] = vis.done
-                for t in G[n]:
-                    G[n][t]['color'] = vis.ready
-        if vis:
-            vis.add_frame(G)
-
-
-empty = object()
+class Graph:
+    terms: set[Node]
+    labels: dict[str, Node]
 
 @dataclass
-class Fermion:
-    kind:str
-    value:object=empty
-    position:bool|None=None
-    def unwrap(self):
-        if self.position is None:
-            raise EvalError(f"Tried to unwrap value that hasn't yet been determined")
-        if not self.position:
-            raise EvalError(f"Tried to unwrap value that wasn't produced.")
-        return self.value
-
-    def ok(self, value=empty):
-        if self.position is not None:
-            raise EvalError(f"Tried to set fermion value twice.")
-        self.position = True
-        self.value = value
-
-    def nok(self):
-        if self.position is not None:
-            raise EvalError(f"Tried to set fermion value twice.")
-        self.position = False
-
-class Boson:
-    """
-    For convenience to wrap calls to normal python functions.
-    Also as an example of how to handle effects
-    """
-    def __init__(self, func):
-        self.func = func
-    def __call__(self, incoming:tuple[Fermion,...], outgoing:tuple[Fermion, ...]):
-        # TODO how to make sure these are in the right order?
-        args = tuple(a.unwrap() for a in incoming)
-        try:
-            value = self.func(*args)
-            for f in outgoing:
-                if f.kind == 'value':
-                    f.ok(value)
-        except Exception as e:
-            for f in outgoing:
-                if f.kind == 'throw':
-                    f.ok(e)
-        for f in outgoing:
-            if f.position is None:
-                f.nok()
+class Transform:
+    pass
 
 
+type match = Callable[[Graph], ]
+type rewrite = Callable[[Graph, Node], None]
 
-
+@dataclass
+class GraphRewriter:
+    transforms: list[Callable]
+    def __call__(self, f):
+        pass

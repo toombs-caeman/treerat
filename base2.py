@@ -68,6 +68,15 @@ class match(NamedTuple):
     stop:int
     label:str = ''
     content:'tuple[match,...]' = ()
+    def labelled(self) -> 'Generator[match]':
+        if self.label:
+            content = []
+            for c in self.content:
+                content.extend(c.labelled())
+            yield self._replace(content=tuple(content))
+        else:
+            for c in self.content:
+                yield from c.labelled()
     def ast(self, src:str) -> Generator[ast]:
         if self.label:
             content = []
