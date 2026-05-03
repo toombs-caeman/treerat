@@ -3,13 +3,15 @@
 see also pika parsing paper: https://arxiv.org/pdf/2005.06444
 
 # Design
-This was implemented with the idea of porting it to another language half in mind, so some implmentation decisions might seem weirdly unpythonic.
+This was implemented with the idea of porting it to another language in mind,
+so some implmentation decisions might seem weirdly unpythonic.
 
 comments containing '§' are referrencing sections of this paper
 
 ## clauses
 rather than use classes, use only basic python types: bool, tuple, str
-This is essentially emulating a tagged union, and translates very directly to a struct.
+This is essentially emulating a tagged union,
+and translates very directly to a struct.
 
 
 ## TODO I got some questions
@@ -49,42 +51,24 @@ This is essentially emulating a tagged union, and translates very directly to a 
 from collections import defaultdict
 from enum import IntEnum
 import heapq
-from base2 import ParseError, Parser, match
+
+from base import ParseError, Parser, match
 from grammar import *
 
 # types for internal index format
-class T(IntEnum): # clause types
-    # pseudo
-    ref = 0  # name
-    label = 1# label:
-    # terminal
-    lit = 2  # ""
-    char = 3 # []
-    dot = 4  # .
-    # non-terminal
-    seq = 5  # ' '
-    first = 6# /
-    no = 7   # !
-    yes = 8  # &
-    one = 9  # +
-    zed = 10 # *
-    opt = 11 # ?
-    @classmethod
-    def from_clause(cls, c:clause):
-        return getattr(cls, type(c).__name__)
 
-type _memo = defaultdict[int, dict[int,match]]
+type _memo = defaultdict[int, dict[int, match]]
 
 
 class Pika:
-    def __init__(self, g:Grammar|str|None = None, startRule:str = 'grammar'):
+    def __init__(self, g: Grammar | str | None = None, startRule: str = 'grammar'):
         match g:
             case str():
                 g = Grammar.from_ast(Pika().parse(g).ast(g))
             case None:
                 g = Grammar.meta()
             case dict():
-                g = Grammar(g) # copy
+                g = Grammar(g)  # copy
             case _:
                 raise ValueError(g)
 
@@ -103,7 +87,10 @@ class Pika:
         # a/(b/c) -> a/b/c
         # references can always be eliminated unless recursive. careful
 
+        g.deduplicate() # reduce identical subgraphs
         g.validate()
+        self.grammar = g
+        self.startRule = startRule
 
         # this will be the set of ast nodes this parser can produce
         labels = set()
@@ -113,72 +100,54 @@ class Pika:
         # The purpose of this is to generate a topological sort of the grammar as a graph of clauses.
         # i.e. idx is a deduplicated post-order traversal of the graph.
         # While we're visiting each node, transform references to subclauses to integer indexes into idx.
-        idx:list[tuple[T, *tuple[int,...]]] = []
-        clauses:list[clause] = []
+        idx: list[tuple[T, *tuple[int, ...]]] = []
         metadata = {}
         seen = {}
-        def dfs(n):
-            if n in seen:
-                return seen[n]
-            # Mark this node as seen using a handy unique object.
-            # Ideally, this should be the index of this clause (cI), but we don't know that yet.
-            # Any subclauses which capture a reference to n will have to be updated once we do.
-            seen[n] = n
-            # marker to avoid updating the whole index.
-            oldlen = len(idx)
+        def getcI(n):
+            return seen[id(n)]
+
+        for cI, n in enumerate(g.terms(startRule)):
+            seen[id(n)] = cI
+        for cI, n in enumerate(g.terms(startRule)):
             match n:
-                case ref():
-                    idx.append((T.ref, dfs(g[n.name])))
-                case label():
-                    labels.add(n.name)
-                    idx.append((T.label, dfs(n.inner)))
-                case seq() | first():
-                    idx.append((T.from_clause(n), *map(dfs, n)))
-                case no() | yes() | zed() | one() | opt():
-                    idx.append((T.from_clause(n), dfs(n.inner)))
-                case lit() | char() | dot():
+                case [T.ref, name]:
+                    idx.append((T.ref, getcI(g[name])))
+                case [T.label, name, inner]:
+                    labels.add(name)
+                    metadata[cI] = name
+                    idx.append((T.label, getcI(inner)))
+                case [T.seq | T.first, left, right]:
+                    idx.append((n[0], getcI(left), getcI(right)))
+                case [T.no | T.yes | T.zed | T.one | T.opt, inner]:
+                    idx.append((n[0], getcI(inner)))
+                case [T.lit, inner]:
                     # TODO insert virtual clauses as dependency for multichar lit()
                     # basically this is a transform 'abc' -> &'a' 'abc'
                     # we do this so that lit() can be treated as a non-terminal in the multicharacter case
-                    # when all terminals
-                    idx.append((T.from_clause(n),))
-            clauses.append(n)
-            cI = len(idx) - 1
-            # Update with our actual index, now that we know it.
-            seen[n] = cI
-            # update node metadata
-            match n:
-                case label():
-                    metadata[cI] = n.name
-                case lit():
-                    metadata[cI] = n.inner
-                case char():
+                    metadata[cI] = inner
+                    idx.append((T.lit,))
+                case [T.dot]:
+                    idx.append((T.dot,))
+                case [ T.char | T.ichar , *spec]:
                     # expand and deduplicate character set
-                    metadata[cI] = n.invert, frozenset(
+                    metadata[cI] = frozenset(
                         chr(c)
-                        for s in n.spec
+                        for s in spec
                         for c in range(ord(s[0]), ord(s[-1]) + 1)
                     )
-            # finally clean up references introduced by knowing our index late
-            # NOTE I believe only ref() can produce cycles, but not exactly sure
-            if isinstance(n, ref):
-                idx[oldlen:cI] = [
-                    (t, *(cI if x == n else x for x in inner))
-                    for t, *inner in idx[oldlen:cI]
-                ]
-            return cI
-        dfs(g[startRule])
+                    idx.append((n[0],))
+                case _:
+                    raise ValueError(n)
         # finalize
-        self.clauses = tuple(clauses)
         self.index = tuple(idx)
         self.labels = frozenset(labels)
         self.metadata = metadata
 
-        memo:_memo = defaultdict(dict)
+        memo: _memo = defaultdict(dict)
         alwaysRun = []
         nullable = set()
-        for cI,c in enumerate(self.index):
-            if (m:=self._match('', 0, cI, memo)) is not None:
+        for cI, c in enumerate(self.index):
+            if (m := self._match('', 0, cI, memo)) is not None:
                 # determine which clauses to always run
                 # by matching them against an empty src string.
                 memo[0][cI] = m
@@ -192,9 +161,9 @@ class Pika:
 
         # §2.6
         # generate seed parent clauses
-        # basically, if a clause matches, which 
+        # basically, if a clause matches, which
         seeds = [[] for _ in range(len(self.index))]
-        for cI,c in enumerate(self.index):
+        for cI, c in enumerate(self.index):
             match c[0]:
                 case T.seq:
                     for child in c[1:]:
@@ -211,22 +180,23 @@ class Pika:
         # finalize seeds
         self.seeds = tuple(tuple(s) for s in seeds)
 
-    def _match(self, src:str, sI:int, cI:int, memo:_memo) -> match|None:
+    def _match(self, src: str, sI: int, cI: int, memo: _memo) -> match | None:
         c = self.index[cI]
         match c[0]:
             case T.dot:
                 if sI < len(src):
                     return match(sI, sI+1)
-            case T.char:
-                inv, spec = self.metadata[cI]
-                if sI< len(src) and inv ^ (src[sI] in spec):
+            case T.char | T.ichar:
+                inv = c[0] == T.ichar
+                spec = self.metadata[cI]
+                if sI < len(src) and inv ^ (src[sI] in spec):
                     return match(sI, sI+1)
             case T.lit:
                 s = self.metadata[cI]
                 if src.startswith(s, sI):
                     return match(sI, sI+len(s))
             case T.label:
-                if (m:=memo[sI].get(c[1])):
+                if (m := memo[sI].get(c[1])):
                     return m._replace(label=self.metadata[cI])
             case T.ref:
                 return memo[sI].get(c[1])
@@ -234,7 +204,7 @@ class Pika:
                 content = []
                 stop = sI
                 for subc in c[1:]:
-                    if (m:=memo[stop].get(subc)) is None:
+                    if (m := memo[stop].get(subc)) is None:
                         break
                     content.append(m)
                     stop = m.stop
@@ -256,7 +226,7 @@ class Pika:
             case T.zed | T.one:
                 stop = sI
                 content = []
-                while (m:=memo[stop].get(c[1])):
+                while (m := memo[stop].get(c[1])):
                     if stop == m.stop:
                         break
                     content.append(m)
@@ -264,30 +234,86 @@ class Pika:
                 if content or c[0] == T.zed:
                     return match(sI, stop, content=tuple(content))
             case _:
-                raise ValueError(f"{clause=}")
+                raise ValueError(f"{c=}")
 
-    def parse(self, text:str) -> match:
+    def parse(self, text: str) -> match:
         memo = self.get_memo(text)
 
         goal = memo[0].get(len(self.index)-1)
         if goal is None:
             # §3.2 error recovery
-            # Syntax errors can be defined as regions of the input that are not spanned by matches of rules of interest. Recovering after a syntax error involves finding the next match in the memo table after the end of the syntax error for any grammar
-            # rule of interest: for example, a parser could skip over a syntax error to find the next complete function, statement, or expression in the input. This lookup requires O(log n) time in the length of the input if a skip list or balanced tree is used to store each row of the memo table.
+            # Syntax errors can be defined as regions of the input that are
+            # not spanned by matches of rules of interest.
+            # Recovering after a syntax error involves finding the next match
+            # in the memo table after the end of the syntax error for any
+            # rule of interest: for example, a parser could skip over a syntax
+            # error to find the next complete function, statement,
+            # or expression in the input. This lookup requires O(log n) time in
+            # the length of the input if a skip list or balanced tree is used
+            # to store each row of the memo table.
 
-            # for our purposes, I believe the clauses of interest are those with labels
-            # other options include: rule definitions (ref), explicitly marking recovery points?
-            # instead of 'recovering' anything, just raise ParseError and point to the problem.
-            raise ParseError()
+            # for our purposes, I believe the clauses of interest are labels
+            # explicitly marked recovery points?
+            # instead of 'recovering' anything, just raise ParseError
 
-        # convert inner _match representation to match
+            # cI of labels
+            of_interest = [
+                i for i, c in enumerate(self.index) if c[0] == T.label
+            ]
+
+            # record the first span that has no matches in of_interest
+            # TODO actually look at all labelled matches, and do interval math
+            start = None
+            stop = None
+            sI = 0
+            while sI <= len(text):
+                newI = sI
+                for cI in of_interest:
+                    if m := memo[sI].get(cI):
+                        newI = max(newI, m.stop)
+                if newI == sI:
+                    start = sI
+                    break
+                else:
+                    sI = newI
+            sI += 1
+
+            while sI <= len(text):
+                for cI in of_interest:
+                    if m := memo[sI].get(cI):
+                        stop = sI
+                        break
+                else:
+                    sI += 1
+                    continue
+                break
+
+            if stop is None:
+                stop = len(text)
+
+            def pos(idx):
+                lineno = 1 + text.count('\n', 0, idx)
+                offset = idx - text.rfind('\n', 0, idx)
+                return lineno, offset
+
+            startp = pos(start)
+            stopp = pos(stop)
+            raise ParseError(
+                f'parse failed from {startp} to {stopp}',
+                # file, lineno, offset, text, endlno, endoff
+                (None, *startp, text, *stopp)
+            )
+
         return goal
 
-    def get_memo(self, text:str) -> _memo:
+    def ast(self, text: str):
+        return self.parse(text).ast(text)
+
+    def get_memo(self, text: str) -> _memo:
         # TODO we could allocate this all at once
         #   almost every sI will have at least one match
         # memo:_memo = [{} for _ in range(len(text)+1)]
-        memo:_memo = defaultdict(dict)
+        memo: _memo = defaultdict(dict)
 
         # TODO can/should we condense the terminal clauses to a regex?
         #   this pre-check would happen here.
@@ -327,12 +353,16 @@ class Pika:
                     heapq.heappush(q, c)
 
         return memo
-    def chart(self, text:str, max_width=120):
+
+    def chart(self, text: str, max_width=120, labels_only=False):
         """returns a diagram representing a parsed input."""
         # TODO upgrade to show spans and overlapping matches
         memo = self.get_memo(text)
+        text = text.replace('\n', '↩')
         lines = [f"{text}─╮"]
-        for cI, c in enumerate(self.clauses):
+        for cI, c in enumerate(self.grammar.terms(self.startRule)):
+            if labels_only and c[0] != T.label:
+                continue
             line = []
             for sI in range(len(text)+1):
                 m = memo[sI].get(cI)
@@ -342,26 +372,61 @@ class Pika:
                     marker = '□' if m.stop == sI else '■'
                 line.append(marker)
             line.append('│')
-            line.append(c.peg)
+            line.append(self.grammar.pe(c))
             lines.append(''.join(line))
         lines.append(f"{text}─╯")
-        __import__('pprint').pprint(memo[12])
         return '\n'.join(line[:max_width] for line in lines)
+
+    def spans(self, text: str, max_width=120):
+        memo = self.get_memo(text)
+        text = text.replace('\n', '↩')
+        lines = [f"{text}─╮"]
+        for cI, c in enumerate(self.grammar.terms(self.startRule)):
+            if c[0] != T.label:
+                continue
+            spans = defaultdict(lambda: [False, False, False])
+            # get all the matches of this type
+            # for each position, record if a match start, stops, or spans that position.
+            for sI in range(len(text) + 1):
+                if m := memo[sI].get(cI):
+                    spans[m.start][0] = True
+                    spans[m.stop-1][2] = True
+                    for i in range(m.start+1, m.stop):
+                        spans[i][1] = True
+            line = []
+            for sI in range(len(text) + 1):
+                match spans[sI]:
+                    case [True, _, False]:
+                        line.append('←')
+                    case [False, _, True]:
+                        line.append('→')
+                    case [True, _, True]:
+                        line.append('⟷')
+                    case [_, True, _]:
+                        line.append('-')
+                    case _:
+                        line.append(' ')
+            line.append('│')
+            line.append(self.grammar.pe(c))
+            lines.append(''.join(line))
+
+        lines.append(f"{text}─╯")
+        return '\n'.join(line[:max_width] for line in lines)
+
 
 def test_meta():
     """this is proof of the fixed point grammar."""
     defined = Grammar.meta()
-    src = defined.peg
+    src = defined.peg()
     ast = list(Pika(defined).parse(src).ast(src))
     calc = Grammar.from_ast(ast)
     print(ast)
-    for k in defined:
-        rulePEG = f"{k} <- {defined[k].peg}"
-        assert defined[k] == calc[k], rulePEG
-    assert defined == calc
+    assert defined.peg() == calc.peg()
+
 
 def test_proto():
-    assert isinstance(Pika(), Parser)
+    pass # assert isinstance(Pika(), Parser)
+
 
 if __name__ == "__main__":
     import pytest

@@ -1,31 +1,42 @@
-from collections import namedtuple
-from typing import Iterable, NamedTuple, Self
+"""
+represent PEG in a normalized form, graph reduction engine?
+"""
+from collections import defaultdict
+from functools import cache, cached_property
+from enum import IntEnum, auto
+import re
+from typing import Iterable
 
-import pytest
 from base2 import ast
 
-"""
-a description parsing expression grammars for parsing generators
 
-TODO potentially huge problem, with NamedTuple lit('b') == ref('b')
+class T(IntEnum):
+    # this also encodes operator precedence (for Grammar.peg())
+    # terminal
+    dot = auto()  # .
+    char = auto()  # []
+    ichar = auto()  # [^]
+    lit = auto()  # ""
+    re = auto()  # `` regex
+    # nonterminal
+    label = auto()  # label:
+    no = auto()  # !
+    yes = auto()  # &
+    one = auto()  # +
+    zed = auto()  # *
+    opt = auto()  # ?
+    seq = auto()  # ' '
+    first = auto()  # /
+    # Grammar uses recursive data structures internally instead of ref,
+    # but in situations where that can't be done:
+    # ref is a reference to a named rule in the grammar.
+    ref = auto()
 
-TODO docstrings with definitions, motivation
+# TODO expand character ranges, deduplicate
+# return [T.char, ''.join({chr(x) for s in spec for x in range(ord(s[0]), ord(s[-1])-1)})]
 
-https://en.wikipedia.org/wiki/Parsing_expression_grammar
-"""
 
-# TODO serializers? as a way to load/restore grammars
-# struct + base64?
-# json with custom encoder?
-# https://docs.python.org/3/library/base64.html
-# https://docs.python.org/3/library/struct.html
-# https://docs.python.org/3/library/json.html
-
-type clause = terminal | nonterminal
-type terminal = dot | lit | char | ref
-type nonterminal = label | seq | first | yes | no | opt | zed | one
-
-def unescape(s:str) -> str:
+def unescape(s: str) -> str:
     """convert escaped strings to their non-escaped form."""
     # TODO handle octal values
     for old, new in (
@@ -36,91 +47,500 @@ def unescape(s:str) -> str:
         (r'\]', ']'),
         (r'\"', '"'),
         (r"\'", "'"),
-        (r'\\','\\'),
+        (r'\\', '\\'),
     ):
         s = s.replace(old, new)
     return s
 
+
+def dot():
+    return [T.dot]
+
+
+def char(*spec):
+    assert all(0 < len(s) <= 2 for s in spec)
+    return [T.char, *spec]
+
+
+def ichar(*spec):
+    assert all(0 < len(s) <= 2 for s in spec)
+    return [T.ichar, *spec]
+
+
+def lit(s):
+    return [T.lit, s]
+
+
+def label(name, term):
+    return [T.label, name, term]
+
+
+def seq(term, *rest) -> list:
+    match len(rest):
+        case 0:
+            return term
+        case 1:
+            return [T.seq, term, rest[0]]
+        case _:
+            return [T.seq, term, seq(*rest)]
+
+
+def first(term, *rest) -> list:
+    match len(rest):
+        case 0:
+            return term
+        case 1:
+            return [T.first, term, rest[0]]
+        case _:
+            return [T.first, term, first(*rest)]
+
+
+def no(term):
+    return [T.no, term]
+
+
+def yes(term):
+    return [T.yes, term]
+
+
+def one(term):
+    return [T.one, term]
+
+
+def zed(term):
+    return [T.zed, term]
+
+
+def opt(term):
+    return [T.opt, term]
+
+
+def regex(pattern):
+    return [T.re, pattern]
+
+
+def ref(name):
+    return [T.ref, name]
+
+
+type term = list[T | term | str]
+
+
 class Grammar(dict):
+    def __getitem__(self, key: str, /) -> list:
+        # act like defaultdict(list)
+        return self.setdefault(key, [])
+
+    def __setitem__(self, key: str, value: list):
+        if key not in self:
+            return super().__setitem__(key, value)
+        # preserve the id of the current value
+        # but swap its contents
+        self[key][:] = value
+        self.cache_clear()
+
+    def cache_clear(self):
+        # TODO clear all the caches
+        for cache in ['validate', 'terms', 'peg', 'deduplicate']:
+            getattr(self, cache).cache_clear()
+        for cached_property in ['parents']:
+            if cached_property in self.__dict__:
+                delattr(self, cached_property)
+
+    @cache
+    def validate(self):
+        # TODO more validation
+
+        # make sure all rules have a definition (not empty)
+        # and that no rule is `a <- a`
+        return all(x and (x != x[0]) for x in self.values())
+
+    def copy(self):
+        raise NotImplementedError('this is tricky')
+
+    def __hash__(self):
+        # give us a fake hash, otherwise we can't use cache because of self
+        # TODO what sins have I committed with this?
+        return hash(id(self))
+
+    @cache
+    def terms(self, key: str | None = None) -> tuple[term, ...]:
+        """produce a post order deduplicated topological sort of terms reachable from a given rule"""
+        # useful for generating a pika parser
+        memo = set()
+
+        def dfs(n):
+            if id(n) in memo:
+                return
+            memo.add(id(n))
+            match n:
+                case [T.dot | T.lit | T.char | T.ichar, *_]:
+                    pass
+                case [T.seq | T.first, left, right]:
+                    yield from dfs(left)
+                    yield from dfs(right)
+                case [T.label, _, term] | [T(), term]:
+                    yield from dfs(term)
+            yield n
+        values = self.values() if key is None else (self[key],)
+        out = []
+        for v in values:
+            out.extend(dfs(v))
+        return tuple(out)
+
+    def remove_lr(self, key=None):
+        """eliminate left recursion"""
+        if key is None:
+            for k in list(self):
+                self.remove_lr(k)
+            return
+        memo = set()
+
+        def dfs(n):
+            if id(n) in memo:
+                if n == self[key]:
+                    # print(key, n[0].name, self.pe(n, shortcircuit=False))
+                    return n
+                return
+            memo.add(id(n))
+            match n:
+                case [T.dot | T.lit | T.char | T.ichar, *_]:
+                    return
+                case [T.first, left, right]:
+                    return dfs(left) or dfs(right)
+                case [T.seq, left, right]:
+                    if (ret := dfs(left)):
+                        return ret
+                    if self.nullable(left):
+                        return dfs(right)
+                case [T.label, _, term] | [T(), term]:
+                    return dfs(term)
+                case _:
+                    raise ValueError(n)
+
+        while True:
+            memo.clear()
+            problem = dfs(self[key])
+            if not problem:
+                break
+            match problem:
+                case [T.first, [T.seq, lilprob, x], right] if lilprob == problem:
+                    ppeg = self.pe(problem, min(T), shortcircuit=False)
+                    self._replace(problem, x)
+                    name = self._getname('LR')
+                    self[name] = first(seq(x, self[name]), self._)
+                    solution = seq(right, self[name])
+                    problem[:] = solution
+
+                case _:
+                    mea_culpa = f"don't know how to resolve {
+                        self.pe(problem, min(T), shortcircuit=False)}"
+                    raise NotImplementedError(mea_culpa)
+
+    def nullable(self, term) -> bool:
+        memo = {}
+
+        def dfs(n):
+            if id(n) in memo:
+                return memo[id(n)]
+            ret = None
+            memo[id(n)] = ret
+            match n:
+                case [T.dot | T.lit | T.char | T.ichar, *_]:
+                    ret = False
+                case [T.first, left, right]:
+                    ret = dfs(left) or dfs(right)
+                case [T.seq, left, right]:
+                    ret = dfs(left) and dfs(right)
+                case [T.no | T.yes | T.opt | T.zed, term]:
+                    return True
+                case [T.label, _, term] | [T(), term]:
+                    return dfs(term)
+                case _:
+                    raise ValueError(f"dunno boss {self.pe(n)}")
+            memo[id(n)] = ret
+            return ret
+        return dfs(term)
+
+    @cached_property
+    def parents(self) -> dict[int, list[term]]:
+        """get the parents of terms by id"""
+        # have to do it this way because terms are not hashable
+        out = defaultdict(list)
+        for n in self.terms():
+            match n:
+                case [T.dot | T.lit | T.char | T.ichar, *_]:
+                    pass
+                case [T.seq | T.first, left, right]:
+                    out[id(left)].append(n)
+                    out[id(right)].append(n)
+                case [T.label, _, term] | [T(), term]:
+                    out[id(term)].append(n)
+        return out
+
+    @cache
+    def deduplicate(self):
+        """deduplicate equivalent subclauses"""
+        for i, oldTerm in enumerate(self.terms()):
+            for newTerm in self.terms()[:i]:
+                if oldTerm == newTerm and oldTerm is not newTerm:
+                    # self._replace can be much simpler if we don't use it here
+                    # self._replace(oldTerm, newTerm)
+                    for p in self.parents[id(oldTerm)]:
+                        match p:
+                            case [T.dot | T.lit | T.char | T.ichar, *_]:
+                                raise ValueError(
+                                    'terminal is supposedly a parent')
+                            case [T.seq | T.first, left, right]:
+                                if left == oldTerm:
+                                    p[1] = newTerm
+                                if right == oldTerm:
+                                    p[2] = newTerm
+                            case [T.label, *_]:
+                                p[2] = newTerm
+                            case [T(), _]:
+                                p[1] = newTerm
+                    self.cache_clear()
+
+    def _getname(self, like: str = '') -> str:
+        """get a rule name that hasn't been used yet."""
+        base = like.rstrip('0123456789')
+        if base not in self:
+            return base
+        count = 1
+        while (key := f"{base}{count}") in self:
+            count += 1
+        return key
+
+    def _replace(self, oldTerm, newTerm):
+        # TODO most of the time this simple way works fine
+        # but it doesn't work for deduplication.
+        oldTerm[:] = newTerm
+        self.cache_clear()
+
+    def trim(self, key: str):
+        """remove rules which are not reachable from the given rule name"""
+        evilTwin = {id(v): k for k, v in self.items()}
+        for t in self.terms(key):
+            if id(t) in evilTwin:
+                del evilTwin[id(t)]
+        for k in evilTwin.values():
+            del self[k]
+
+    _ = lit('')
+
+    def enable_regex(self, key=None):
+        """graph rewrite operations"""
+        def fmt(t):
+            if t[0] == T.lit:
+                return re.escape(t[1])
+            return self.pe(t)
+
+        for t in self.terms(key):
+            match t:
+                case [T.seq, [T.lit | T.char | T.ichar, *_], [T.lit | T.char | T.ichar, *_]]:
+                    self._replace(t, regex(f"{fmt(t[1])}{fmt(t[2])}"))
+                case [T.seq, [T.re, pattern], [T.lit | T.char | T.ichar, *_]]:
+                    self._replace(t, regex(f"(?:{pattern}){fmt(t[2])}"))
+                case [T.seq, [T.lit | T.char | T.ichar, *_], [T.re, pattern]]:
+                    self._replace(t, regex(f"{fmt(t[2])}(?:{pattern})"))
+                case [T.first, [T.lit | T.char | T.ichar, *_], [T.lit | T.char | T.ichar, *_]]:
+                    self._replace(t, regex(f"{fmt(t[1])}|{fmt(t[2])}"))
+                case [T.first, [T.re, pattern], [T.lit | T.char | T.ichar, *_]]:
+                    self._replace(t, regex(f"(?:{pattern})|{fmt(t[2])}"))
+                case [T.first, [T.lit | T.char | T.ichar, *_], [T.re, pattern]]:
+                    self._replace(t, regex(f"{fmt(t[2])}|(?:{pattern})"))
+
+    def reduce(self, key=None):
+        """graph rewrite operations"""
+        # TODO this also eliminates * ? + at the cost of more rules
+        # TODO not entirely sure if this always does all reductions,
+        # but it probably will because of how terms() is sorted
+        for t in self.terms(key):
+            match t:
+                case [T.seq, self._, a] | [T.seq, a, self._]:
+                    # ε a -> a
+                    # a ε -> a
+                    self._replace(t, a)
+                case [T.first, self._, _]:
+                    # ε / a -> ε
+                    self._replace(t, self._)
+                case [T.yes, a]:
+                    # &a -> !!a
+                    self._replace(t, no(no(a)))
+                case [T.opt, a]:
+                    # a? -> a / ε
+                    self._replace(t, first(a, self._))
+                case [T.one, a]:
+                    # a+ -> a a*
+                    self._replace(t, seq(a, zed(a)))
+                case [T.seq, [T.lit, a], [T.lit, b]]:
+                    # 'a' 'b' -> 'ab'
+                    self._replace(t, lit(f"{a}{b}"))
+                case [T.first, [T.lit, a], [T.lit, b]] if len(a) == len(b) == 1:
+                    # 'a' / 'b' -> [ab]
+                    self._replace(t, char(a, b))
+                case [T.first, [T.char, *spec], [T.lit, b]] | \
+                     [T.first, [T.lit, b], [T.char, *spec]] if len(b) == 1:
+                    # [a] / 'b' -> [ab]
+                    #  'b' / [a] -> [ab]
+                    self._replace(t, char(*spec, b))
+                case [T.zed, a]:
+                    name = self._getname('REP')
+                    self[name] = first(seq(a, self[name]), self._)
+                    self._replace(t, self[name])
+                # TODO normalize char spec
+                # TODO (a b) c -> a (b c)
+                # TODO (a / b) / c -> a / (b / c)
+
+        if key is not None:
+            self.trim(key)
+        self.deduplicate()
+
+    @property
+    def size(self):
+        return len(self.terms())
+
+    def __str__(self) -> str:
+        return self.peg()
+
+    @cache
+    def peg(self, key=None):
+        if key is None:
+            return '\n'.join(self.peg(k) for k in sorted(self))
+        return f"{key} <- {self.pe(super().__getitem__(key), max(T), False)}"
+
+    def pe(self, expr, outerT: T = max(T), shortcircuit=True):
+        """format a parsing expression"""
+        # TODO this may no longer be possible after eliminating left recursion
+        if shortcircuit:
+            for k, v in self.items():
+                if expr == v:
+                    return k
+        match expr:
+            case [T.dot]:
+                out = '.'
+            case [T.char, *spec] | [T.ichar, *spec]:
+                # TODO do better
+                def escape(x):
+                    if x == ']':
+                        return r'\]'
+                    return repr(x)[1:-1]
+                inv = '^' if expr[0] == T.ichar else ''
+                spec = ''.join(
+                    f"{escape(x[0])}-{escape(x[-1])}"
+                    if len(x) > 1 else escape(x)
+                    for x in expr[1:]
+                )
+                out = f"[{inv}{spec}]"
+            case [T.lit, value]:
+                out = repr(value)
+            case [T.re, pattern]:
+                return f"`{repr(pattern)[1:-1]}`"
+            case [T.label, name, term]:
+                out = f"{name}:{self.pe(term, T.label)}"
+            case [T.seq, left, right]:
+                out = f"{self.pe(left, T.seq)} {self.pe(right, T.seq)}"
+            case [T.first, left, right]:
+                out = f"{self.pe(left, T.first)} / {self.pe(right, T.first)}"
+            case [T.no, term]:
+                out = f"!{self.pe(term, T.no)}"
+            case [T.yes, term]:
+                out = f"&{self.pe(term, T.yes)}"
+            case [T.one, term]:
+                out = f"{self.pe(term, T.one)}+"
+            case [T.zed, term]:
+                out = f"{self.pe(term, T.zed)}*"
+            case [T.opt, term]:
+                out = f"{self.pe(term, T.opt)}?"
+            case _:
+                raise ValueError(expr)
+        if expr[0] > outerT:
+            return f"({out})"
+        return out
+
     @classmethod
-    def meta(cls) -> 'Grammar':
-        # TODO align labels here with names of namedtuple types
-        G = cls()
-        G['grammar'] = seq(ref('sp'), zed(ref('definition')), no(dot()))
-        G['definition'] = label('definition',seq(ref('identifier'), lit('<-'), ref('sp'), ref('E')))
+    def meta(klass):
+
+        G = klass()
+        G['grammar'] = seq(G['sp'], zed(G['definition']), no(dot()))
+        G['definition'] = label('definition', seq(
+            G['identifier'], lit('<-'), G['sp'], G['E']))
         G['EOL'] = first(lit('\r\n'), lit('\n'), lit('\r'))
-        G['comment'] = seq(lit('#'), zed(seq(no(ref('EOL')), dot())), ref('EOL'))
-        G['sp'] = zed(first(lit(' '), lit('\t'), ref('EOL'), ref('comment')))
+        G['comment'] = seq(lit('#'), zed(seq(no(G['EOL']), dot())), G['EOL'])
+        G['sp'] = zed(first(lit(' '), lit('\t'), G['EOL'], G['comment']))
         G['char'] = first(
             seq(lit('\\'), char(*"nrt'\"[]\\")),
             seq(lit('\\'), char('02'), char('07'), char('07')),
             seq(lit('\\'), char('07'), opt(char('07'))),
             seq(no(lit('\\')), dot()),
         )
-        G['class'] =  seq(
+        G['class'] = seq(
             label('char', seq(
                 lit('['), zed(seq(
                     no(lit(']')),
                     # TODO don't love this
                     label('crange', first(
-                        seq(ref('char'), lit('-'), ref('char')),
-                        ref('char')
+                        seq(G['char'], lit('-'), G['char']),
+                        G['char']
                     )),
                 )),
                 lit(']'),
             )),
-            ref('sp')
+            G['sp']
         )
         G['identifier'] = seq(label(
             'identifier',
             seq(char('az', 'AZ', '_'), zed(char('az', 'AZ', '_', '09'))),
-        ), ref('sp'))
+        ), G['sp'])
         q = lit("'")
         qq = lit('"')
-        G['lit'] = seq( first(
-            seq(q, label('lit',zed(seq(no(q), ref('char')))), q),
-            seq(qq, label('lit',zed(seq(no(qq), ref('char')))), qq),
-        ), ref('sp'))
-        G['E'] = first( # choice/first
-            label('first',seq(ref('E1'), lit('/'), ref('sp'), ref('E'))),
-            ref('E1')
+        G['lit'] = seq(first(
+            seq(q, label('lit', zed(seq(no(q), G['char']))), q),
+            seq(qq, label('lit', zed(seq(no(qq), G['char']))), qq),
+        ), G['sp'])
+        G['E'] = first(  # choice/first
+            label('first', seq(G['E1'], lit('/'), G['sp'], G['E'])),
+            G['E1']
         )
-        G['E1'] = first( # sequence
-            label('seq', seq(ref('E1'), ref('E2'))),
-            ref('E2')
+        G['E1'] = first(  # sequence
+            label('seq', seq(G['E2'], G['E1'])),
+            G['E2']
         )
-        G['E2'] = first( # prefix
-            label('yes', seq(lit('&'), ref('sp'), ref('E3'))),
-            label('no',seq(lit('!'), ref('sp'), ref('E3'))),
-            label('label',seq(ref('identifier'), lit(':'), ref('sp'), ref('E2'))),
-            ref('E3')
+        G['E2'] = first(  # prefix
+            label('yes', seq(lit('&'), G['sp'], G['E3'])),
+            label('no', seq(lit('!'), G['sp'], G['E3'])),
+            label('label', seq(G['identifier'], lit(':'), G['sp'], G['E2'])),
+            G['E3']
         )
-        G['E3'] = first( # postfix
-            label('opt', seq(ref('E4'), lit('?'), ref('sp'))),
-            label('zed', seq(ref('E4'), lit('*'), ref('sp'))),
-            label('one', seq(ref('E4'), lit('+'), ref('sp'))),
-            ref('E4')
+        G['E3'] = first(  # postfix
+            label('opt', seq(G['E4'], lit('?'), G['sp'])),
+            label('zed', seq(G['E4'], lit('*'), G['sp'])),
+            label('one', seq(G['E4'], lit('+'), G['sp'])),
+            G['E4']
         )
-        G['E4'] = first( # terminal and paren
-            label('ref',seq(ref('identifier'), no(lit('<-')))),
-            ref('lit'),
-            ref('class'),
-            label('dot', seq(lit('.'), ref('sp'))),
-            seq(lit('('), ref('sp'), ref('E'), lit(')'), ref('sp')),
+        G['E4'] = first(  # terminal and paren
+            label('ref', seq(G['identifier'], no(lit('<-')))),
+            G['lit'],
+            G['class'],
+            label('dot', seq(lit('.'), G['sp'])),
+            seq(lit('('), G['sp'], G['E'], lit(')'), G['sp']),
         )
-        G.validate()
         return G
 
     @classmethod
-    def from_ast(cls, a:Iterable[ast]) -> 'Grammar':
+    def from_ast(cls, a: Iterable[ast]) -> 'Grammar':
         g = Grammar()
-        kernel = {f.__name__:f for f in [ref, label, char, seq, first, no, zed, one, opt, yes]}
+        kernel = {f.__name__: f for f in [
+            label, char, seq, first, no, zed, one, opt, yes]}
         kernel['definition'] = g.__setitem__
-        kernel['identifier'] = lambda x:x
-        kernel['dot'] = lambda _:dot()
-        kernel['lit'] = lambda s:lit(unescape(s))
-        kernel['crange'] = lambda s:unescape(s)[::2]
-        def eval(a:ast|str):
+        kernel['identifier'] = lambda x: x
+        kernel['dot'] = lambda _: dot()
+        kernel['lit'] = lambda s: lit(unescape(s))
+        kernel['crange'] = lambda s: unescape(s)[::2]
+        kernel['ref'] = lambda s: g[s]
+
+        def eval(a: ast | str):
             if isinstance(a, str):
                 return a
             return kernel[a[0]](*map(eval, a[1:]))
@@ -129,240 +549,47 @@ class Grammar(dict):
             eval(rule)
         return g
 
-    def eliminate_left_recursion(self):
-        # https://www.geeksforgeeks.org/dsa/removing-direct-and-indirect-left-recursion-in-a-grammar/
-        def leftmost_ref(c:clause) -> set[str]:
-            """find any refs contained in this clause that could match at the same position as the parent clause."""
-            match c:
-                case dot() | lit() | char():
-                    return set()
-                case ref():
-                    return {c.name}
-                case label() | opt() | zed() | one() | yes()| no():
-                    return leftmost_ref(c.inner)
-                case first():
-                    x = set()
-                    for sub in c:
-                        x.update(leftmost_ref(sub))
-                    return x
-                case seq():
-                    x = set()
-                    for sub in c:
-                        x.update(leftmost_ref(sub))
-                        if not self.nullable(sub):
-                            break
-                    return x
-                case _:
-                    raise ValueError(c)
 
-        # find left recursive rule subsets
-        cursed = {k: leftmost_ref(v) for k, v in self.items()}
-
-
-
-        # TODO identify sources of indirect left recursion
-        # TODO convert all indirect left recursion into direct left recursion
-        # TODO eliminate direct left recursion
-        raise NotImplementedError()
-
-    def validate(self):
-        # TODO detect ref to undefined rule
-        # detect `a <- a`, which is ill-defined.
-        for k,v in self.items():
-            if isinstance(v, ref) and v.name == k:
-                raise ValueError(f"rule {k} is ill-defined (rule in form `a <- a`).")
-    @property
-    def peg(self) -> str:
-        return '\n'.join(
-            f"{k} <- {v.peg}"
-            for k, v in self.items()
-        )
-    def nullable(self, c:clause, seen=None) -> bool|None:
-        seen = set()
-        self.validate()
-        def nil(c):
-            print(c)
-            # NOTE namedtuples of the same shape but different types are seen as equal
-            if (type(c), c) in seen:
-                return None
-            seen.add((type(c), c))
-            match c:
-                case dot() | char():
-                    return False
-                case lit():
-                    return False
-                case opt() | zed() | yes() | no():
-                    return True
-                case label() | one():
-                    return nil(c.inner)
-                case ref():
-                    return nil(self[c.name])
-                case first():
-                    return any(nil(x) for x in c)
-                case seq():
-                    return all(v for x in c if (v:=nil(x)) is not None)
-                case _:
-                    raise ValueError(c)
-        return nil(c)
-
-
-# TERMINALS
-class dot(NamedTuple):
-    @property
-    def peg(self) -> str:
-        return '.'
-
-class lit(NamedTuple):
-    """match a """
-    inner: str
-    @property
-    def peg(self) -> str:
-        return repr(self.inner)
-
-    @classmethod
-    def escape(cls, s:str) -> str:
-        # TODO this isn't perfect
-        # doesn't handle octal values for example
-        t = {
-            '\n':r'\n',
-            '\t':r'\t',
-            '\r':r'\r',
-            '\\':r'\\',
-        }
-        return ''.join(t.get(c, c) for c in s)
-
-#TODO NamedTuple doesn't play nice with overriding __new__
-#this is functionally equivalent, but doesn't play nice with type hints
-class char(namedtuple('char', ['invert', 'spec'])):
-    """match a single character from a set (or inverted set)."""
-    def __new__(cls, *spec:str, invert:bool=False) -> Self:
-        assert all(len(s) <= 2 for s in spec)
-        return super().__new__(cls, invert, spec)
-
-    @property
-    def peg(self) -> str:
-        c = ['^' if self.invert else '']
-        for rule in self.spec:
-            if len(rule) == 1:
-                c.append(rule)
-            else:
-                c.extend((rule[0], '-', rule[-1]))
-        return f"[{''.join(map(char.escape, c))}]"
-
-    @classmethod
-    def escape(cls, c:str) -> str:
-        c = lit.escape(c)
-        return {'[':'\\[', ']':'\\]'}.get(c, c)
-
-class ref(NamedTuple):
-    """refer to a clause by name."""
-    name: str
-    @property
-    def peg(self) -> str:
-        return self.name
-
-# NONTERMINALS
-
-class label(NamedTuple):
-    """label a clause."""
-    name: str
-    inner:clause
-    @property
-    def peg(self) -> str:
-        return f"{self.name}:{self.inner.peg}"
-
-class seq(tuple):
-    """match inner clauses sequentially."""
-    def __new__(cls, *inner:clause) -> clause:
-        match len(inner):
-            case 0:
-                raise ValueError()
-            case 1:
-                return inner[0]
-            case _:
-                # `(a b) c` -> `a b c`
-                c = []
-                for x in inner:
-                    if isinstance(x, seq):
-                        c.extend(x)
-                    else:
-                        c.append(x)
-                return super().__new__(cls, c)
-    def __repr__(self) -> str:
-        return f"{type(self).__name__}{super().__repr__()}"
-    @property
-    def peg(self) -> str:
-        return f"({' '.join(x.peg for x in self)})"
-
-
-class first(tuple):
-    """match on the first matching inner clause."""
-    def __new__(cls, *inner:clause) -> clause:
-        match len(inner):
-            case 0:
-                raise ValueError()
-            case 1:
-                return inner[0]
-            case _:
-                # `(a / b) / c` == `a / b / c`
-                c = []
-                for x in inner:
-                    if isinstance(x, first):
-                        c.extend(x)
-                    else:
-                        c.append(x)
-                return super().__new__(cls, c)
-
-    def __str__(self) -> str:
-        return f"{type(self).__name__}{super().__str__()}"
-    @property
-    def peg(self) -> str:
-        return f"({' / '.join(x.peg for x in self)})"
-
-class no(NamedTuple):
-    """match if the inner clause doesn't."""
-    inner: clause
-    @property
-    def peg(self) -> str:
-        return f"!{self.inner.peg}"
-
-class yes(NamedTuple):
-    """match the inner clause without consuming input."""
-    inner: clause
-    @property
-    def peg(self) -> str:
-        return f"&{self.inner.peg}"
-
-class zed(NamedTuple):
-    """match a clause zero or more times."""
-    inner: clause
-    @property
-    def peg(self) -> str:
-        return f"{self.inner.peg}*"
-
-class one(NamedTuple):
-    """match a clause one or more times."""
-    inner: clause
-    @property
-    def peg(self) -> str:
-        return f"{self.inner.peg}+"
-
-class opt(NamedTuple):
-    """match a clause zero or one times."""
-    inner: clause
-    @property
-    def peg(self) -> str:
-        return f"{self.inner.peg}?"
-
-# TESTS
-def test_nullable():
+def test_lr():
     g = Grammar()
-    g['b'] = seq(ref('b'), lit('b'))
-    #g['c'] = first(seq(ref('c'), lit('c')), lit('c'))
-    assert g.nullable(g['b']) == False
+    g['a'] = first(seq(g['a'], lit(' bap')), lit('boom'))
+    goal = Grammar()
+    goal['a'] = seq(lit('boom'), goal['LR'])
+    goal['LR'] = first(seq(lit(' bap'), goal['LR']), lit(''))
+    assert g != goal
+    g.remove_lr()
+    assert str(g) == str(goal)
+    assert False, 'TODO indirect case'
+
+
+def test_peg():
+    # TODO don't use meta, since it could change
+    print(Grammar.meta().peg())
+    pass
+
+
+def test_reduce():
+    # TODO
+    g = Grammar.meta()
+    g.reduce()
+    print(g)
+    g.enable_regex()
+    print()
+    print()
+    print()
+    print(g)
+
+
+def test_deduplicate():
+    g = Grammar.meta()
+    oldsize = len(g.terms())
+    g.deduplicate()
+    assert len(g.terms()) < oldsize
+
+
 if __name__ == "__main__":
-    #print(Grammar.meta().peg)
-    g = Grammar()
-    g['b'] = seq(ref('b'), lit('b'))
-    print(g.nullable(seq(ref('b'), lit('b'))))
-    
+    import pytest
+    pytest.main([__file__])
+    # test_lr()
+    # test_peg()
+    test_reduce()

@@ -1,28 +1,41 @@
 from functools import cache
-from base2 import ParseError, match
-from grammar import *
+from base import ParseError, Parser, match
+from grammar import Grammar, T
 
 class Packrat:
     def __init__(self, g:Grammar|str|None = None, startRule:str = 'grammar'):
         match g:
             case str():
-                self._grammar = Grammar.from_ast(Packrat().parse(g).ast(g))
+                g = Grammar.from_ast(Packrat().parse(g).ast(g))
             case None:
-                self._grammar = Grammar.meta()
-            case dict():
-                self._grammar = Grammar(g) # copy
+                g = Grammar.meta()
+            case Grammar():
+                pass
             case _:
                 raise ValueError(g)
 
-        #self._grammar.eliminate_left_recursion()
-        self._grammar.validate()
-        self._startRule = startRule
+        g.reduce(startRule)
+        g.remove_lr(startRule)
+        g.validate()
+        self.terms = {id(t):t for t in g.terms(startRule)}
+        self.startRule = id(g[startRule])
+        self._kinds:set[str] = set(
+        t[1] for t in self.terms.values() if t[0] == T.label
+
+        )
+
+    @property
+    def kinds(self) -> set[str]:
+        return self._kinds
+
+    def ast(self, text:str):
+        return self.parse(text).ast(text)
 
     def parse(self, text:str) -> match:
         # TODO attempt partial cache eviction
         # store old attempts in radix tree
         self._match.cache_clear()
-        m = self._match(self._grammar[self._startRule], text, 0)
+        m = self._match(self.startRule, text, 0)
         if m is None:
             # TODO inspect cache to find the longest match
             # use that to enrich the error here
@@ -32,69 +45,55 @@ class Packrat:
         return m
 
     @cache
-    def _match(self, c:clause, src:str, idx:int) -> match|None:
+    def _match(self, c, src:str, idx:int) -> match|None:
+        c = self.terms[c]
         match c:
             # terminals
-            case dot():
+            case [T.dot]:
                 if idx < len(src):
                     return match(idx, idx+1)
-            case lit():
-                if src.startswith(c.inner, idx):
-                    return match(idx, idx+len(c.inner))
-            case char():
-                if idx < len(src) and c.invert ^ any(x[0] <= src[idx] <= x[-1] for x in c.spec):
+            case [T.lit, v]:
+                assert isinstance(v, str)
+                if src.startswith(v, idx):
+                    return match(idx, idx+len(v))
+            case [T.char| T.ichar, *spec]:
+                if idx < len(src) and (c[0] == T.ichar) ^ any(x[0] <= src[idx] <= x[-1] for x in spec):
                     return match(idx, idx+1)
-            case ref():
-                return self._match(self._grammar[c.name], src, idx)
             # non-terminals
-            case label():
-                m = self._match(c.inner, src, idx)
+            case [T.label, lname, term]:
+                m = self._match(id(term), src, idx)
                 if m is not None:
-                    return m._replace(label=c.name)
-            case seq():
-                stop = idx
-                content = []
+                    return m._replace(label=lname)
+            case [T.seq, left, right]:
+                if (l:=self._match(id(left), src, idx)) is None:
+                    return None
+                if (r:=self._match(id(right), src, l.stop)) is None:
+                    return None
+                return match(idx, r.stop, content=(l, r))
+            case [T.first, *c]:
                 for x in c:
-                    if (m:=self._match(x, src, stop)) is None:
-                        return None
-                    content.append(m)
-                    stop = m.stop
-                return match(idx, stop, content=tuple(content))
-            case first():
-                for x in c:
-                    if (m:=self._match(x, src, idx)):
+                    if (m:=self._match(id(x), src, idx)):
                         return m
-            case yes():
-                if (m:=self._match(c.inner, src, idx)):
+            case [T.no, term]:
+                if (m:=self._match(id(term), src, idx)) is None:
                     return match(idx, idx)
-            case no():
-                if (m:=self._match(c.inner, src, idx)) is None:
-                    return match(idx, idx)
-            case opt():
-                if (m:=self._match(c.inner, src, idx)):
-                    return m
-                return match(idx, idx)
-            case zed() | one():
-                stop = idx
-                content = []
-                while (m:=self._match(c.inner, src, stop)):
-                    content.append(m)
-                    if stop == m.stop:
-                        break
-                    stop = m.stop
-                if content or isinstance(c, zed):
-                    return match(idx, stop, content=tuple(content))
+            case _:
+                raise ValueError(c)
 
 
 def test_meta():
     """this is proof of the fixed point grammar."""
     defined = Grammar.meta()
-    src = defined.peg
-    calc = Grammar.from_ast(Packrat(defined, 'grammar').parse(src).toAst(src))
-    for k in calc:
-        rulePEG = f"{k} <- {defined[k].peg}"
-        assert defined[k] == calc[k], rulePEG
-    assert defined == calc
+    src = defined.peg()
+    assert defined.peg(), 'sanity check, this should be the meta grammar'
+    calc = Grammar.from_ast(Packrat().ast(src))
+    print(calc.peg())
+    assert defined.peg() == calc.peg()
+    
+
+def test_proto():
+    p: Parser = Packrat()
+    #assert isinstance(Packrat(), Parser)
 
 if __name__ == "__main__":
     import pytest

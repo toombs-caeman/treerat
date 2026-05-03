@@ -1,155 +1,180 @@
-import abc
+"""
+defines the interface between various parts of the treerat project
 
-class ParseError(Exception):
-    """raised if a parser fails on input while in strict mode."""
+TODO what is the overall structure of language components and how they interact? Kinda need to know now
 
-class CompileError(Exception):
-    """raised if compile step fails unexpectedly."""
+TODO
+protocol classes describe the interface, but should also implement the dumbest possible version of that interface.
 
-class EvalError(Exception):
+protocols
+* parser
+* parser generator
+* async core
+* cli driver
+* debugger
+* visualizer
+* linter
+* lsp
+* formatter
+
+types
+* match - parser output
+* ast
+* debug symbol?
+
+exceptions
+except Thing as e:
+    raise Exception('msg') from e
+
+* prefer typing.Protocol over ABC
+    * https://docs.python.org/3/library/typing.html#typing.Protocol
+    * with @runtime_checkable
+* typing.NamedTuple
+"""
+
+from typing import  Generator, Iterable, NamedTuple, Protocol, runtime_checkable
+
+class ParseError(SyntaxError):
+    """raised if a parser fails on input."""
+    # read up on how to pass details
+    # https://docs.python.org/3/library/exceptions.html#SyntaxError
+
+class EvalError(RuntimeError):
     """raised if an evaluator fails unexpectedly."""
 
-class node:
+class CompileError(EvalError):
+    """raised if compile step fails unexpectedly."""
+
+class EvalShutdown(EvalError):
+    """The evaluator has reached a halt instruction."""
+
+class BreakPoint(EvalError):
+    """The evaluator has reached a breakpoint"""
+
+type ast = tuple[str, *tuple[ast|str,...]]
+class lexen(NamedTuple):
+    style: str
+    content: str
+
+# TODO how do we handle continuable ParseErrors
+# do we need batch/interactive modes for parsing, evaluation?
+
+class match(NamedTuple):
     """
-    Generic tree node with some metadata.
-
-    kind is an identifier of the kind of node.
-    start and stop are indices into the source code such that source[start:stop] is the span covered by this node.
+    representing a parsing match
     """
-    __slots__ = ['kind', 'start', 'stop', 'children']
-    def __init__(self, kind, *children, start:int=..., stop:int=...):
-        self.kind = kind
-        self.start = start
-        self.stop = stop
-        self.children = children
-    def __iter__(self):
-        return iter(self.children)
-    def __getitem__(self, __key):
-        return self.children[__key]
-    def __hash__(self):
-        return hash((self.kind, self.children))
-    def __eq__(self, __o):
-        return isinstance(__o, node) and self.kind == __o.kind and self.children == __o.children
-    def __repr__(self):
-        return f'{type(self).__name__}{(self.kind, *self.children)!r}'
-    def __str__(self):
-        return f'{self.kind}[{self.start}:{self.stop}]'
+    start:int
+    stop:int
+    label:str = ''
+    content:'tuple[match,...]' = ()
+    def labelled(self) -> 'Generator[match]':
+        if self.label:
+            content = []
+            for c in self.content:
+                content.extend(c.labelled())
+            yield self._replace(content=tuple(content))
+        else:
+            for c in self.content:
+                yield from c.labelled()
+    def ast(self, src:str) -> Generator[ast]:
+        if self.label:
+            content: list[ast] = []
+            for c in self.content:
+                content.extend(c.ast(src))
+            if content:
+                yield self.label, *content  # type: ignore[misc]
+            else:
+                yield self.label, src[self.start:self.stop]
+        else:
+            for c in self.content:
+                yield from c.ast(src)
 
-class namespace:
-    def __init__(self, nro:list[dict]|None=None):
-        self.__nro = nro or [{}]
+# TODO extract generic fmtTree
+def fmtMatch(src, n:match, *, prefix:str='', next_p=''):
+    label, start, stop, content = n
+    out = [
+        f"{prefix}{next_p}{label}{':' if label else ''}{src[start:stop]!r}"
+    ]
+    match next_p:
+        case '├':
+            prefix += '│'
+        case '└':
+            prefix += ' '
+    if content:
+        for c in content[:-1]:
+            out.append(fmtMatch(src, c, prefix=prefix, next_p='├'))
+        out.append(fmtMatch(src, content[-1], prefix=prefix, next_p='└'))
+    return '\n'.join(out)
 
-    def __getitem__(self, key):
-        return self.__get(key, slice(None))
+def fmtAst(a:ast|str, *, prefix='', next_p=''):
+    match a:
+        case str():
+            return f"{prefix}{next_p}{a!r}"
+        case _:
+            out = [f"{prefix}{next_p}{a[0]}"]
+            match next_p:
+                case '├':
+                    prefix += '│'
+                case '└':
+                    prefix += ' '
+            if a[1:]:
+                for c in a[1:-1]:
+                    out.append(fmtAst(c, prefix=prefix, next_p='├'))
+                out.append(fmtAst(a[-1], prefix=prefix, next_p='└'))
+            return '\n'.join(out)
+
+@runtime_checkable
+class Parser(Protocol):
+    def parse(self, text:str) -> match:
+        raise ParseError('protocol not implemented')
 
     @property
-    def global_(self):
-        return self.__nro[0]
+    def kinds(self) -> set[str]:
+        """return all ast node kinds which could be generated by this parser."""
+        return set()
 
-    def __get(self, key, sl:slice):
-        for ns in reversed(self.__nro[sl]):
-            if key in ns:
-                return ns[key]
-        raise NameError(key)
+@runtime_checkable
+class Lexer(Protocol):
+    def lex(self, text:str) -> Iterable[lexen]:
+        return [lexen('', text)]
 
-    def __contains__(self, key):
-        return any(key in n for n in self.__nro)
+@runtime_checkable
+class Compiler(Protocol):
+    def compile(self, a:Iterable[ast]) -> ast:
+        return ('main', *a)
 
-    def __setitem__(self, key, value):
-        self.__nro[-1][key] = value
+@runtime_checkable
+class Evaluator(Protocol):
+    """Evaluate an abstract syntax tree.
 
-    def __enter__(self):
-        self.__nro.append({})
-        return self
+    This version is a treewalk evaluator where ast nodes are implemented as methods on the class.
+    Methods receive unevalutated ast|str as arguments.
+    """
+    def __call__(self, ast:ast):
+        fname, *args = ast
+        return getattr(self, fname)(*args)
 
-    def __exit__(self, *_):
-        return self.__nro.pop()
+@runtime_checkable
+class DebuggableEvaluator(Protocol):
+    # TODO step, step_into, step_over, step_out
+    def step(self):
+        raise EvalError('proto not implemented')
+    def step_into(self):
+        raise EvalError('proto not implemented')
+    def step_over(self):
+        raise EvalError('proto not implemented')
+    def step_out(self):
+        raise EvalError('proto not implemented')
+    def breakpoint(self, clear=False):
+        raise EvalError('proto not implemented')
 
-class Visualizer(abc.ABC):
-    """Base class for graph visualizations."""
-    wait  = 'black' # computation is not ready, black is the default color
-    ready = 'blue'  # computation is ready to proceed
-    active= 'green' # computation is active during this step
-    done  = 'gray'  # computation is complete
-    error = 'red'   # computation halted
 
-    @abc.abstractmethod
-    def add_frame(self, data=None):
-        """add a new frame to the animation."""
-
-    @abc.abstractmethod
-    def attr(self, __t, __h=None, /, **attrs):
-        """add attributes to node or edge."""
-
-class NoVis(Visualizer):
-    """Stub for when visualization is turned off."""
-    def noop(self, *args, **kwargs):
-        """don't do anything"""
-    attr = add_frame = noop
-    def __getattr__(self, name):
-        return self.noop
-    def __bool__(self):
-        return False
-    
-class Parser(abc.ABC):
-    """Base class for parsers."""
-    @abc.abstractmethod
-    def __call__(self, text:str, vis:Visualizer=NoVis(), strict=False):
+class Driver(Protocol):
+    def start_core(self):
         pass
-
-class Evaluator(abc.ABC):
-    """
-    Base class for evaluators.
-
-    In general an evaluator embodies the semantics of a language.
-    Each evaluator receives an AST and does the computation represented by the AST.
-    Subclasses of Evaluator should implement the __call__() method to do this.
-
-    As a general pattern (not all evaluators have to do this), each recognized type of node
-    should have a corresponding method in the evaluator to implement the semantics of that node.
-    This makes it relatively straightforward to extend an Evaluator through subclassing.
-
-    Evaluators should raise a RuntimeError if the ast they receive is invalid.
-
-    vis is an optional visualizer, if present, each step of computation should be shown.
-    """
-    @abc.abstractmethod
-    def __call__(self, ast:node, vis:Visualizer=NoVis()):
-        self.vis = vis
-        raise NotImplementedError
-
-
-class Language(abc.ABC):
-    parser:Parser
-    evaluator:Evaluator
-    prompt = '> '
-    def __call__(self, text):
-        return self.evaluator(self.parser(text, strict=True))
-    def repl(self):
-        """
-        A stock standard read eval print loop (REPL).
-
-        This doesn't let you input multi-line expressions,
-        since there's no good way to detect that should be done from the grammar.
-        """
-        # enable readline if it's available
-        # TODO replace this mess with prompt_toolkit.PromptSession
-        try:
-            import readline
-        except ImportError:
-            pass
-        # loop
-        while True:
-            try:
-                # read then eval
-                value = self(input(self.prompt))
-                # print
-                if value is not None:
-                    print(value)
-            except (ParseError, CompileError, EvalError) as e:
-                print(e)
-            except (KeyboardInterrupt, EOFError):
-                break
-
-
+    def input(self):
+        """get a line of user input."""
+        return input('> ')
+    def output(self, text):
+        print(text)
 
